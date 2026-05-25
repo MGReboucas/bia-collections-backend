@@ -1,14 +1,13 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.usuario import Usuario
 from app.models.cupom import Cupom, CupomUsado
-from app.models.pedido import Pedido
 from app.schemas.cupom import (
     CuponsResponse,
     ValidarCupomRequest,
@@ -70,26 +69,24 @@ def listar_cupons(
         for c in ativos_query.all()
     ]
 
-    # Coupons used by this user
+    # Coupons used by this user — eager-load cupom + pedido to avoid N+1
     usos = (
         db.query(CupomUsado)
+        .options(joinedload(CupomUsado.cupom), joinedload(CupomUsado.pedido))
         .filter(CupomUsado.usuario_id == current_user.id)
         .all()
     )
-    usados: List[CupomUsadoResponse] = []
-    for uso in usos:
-        c = uso.cupom
-        pedido = db.query(Pedido).filter(Pedido.id == uso.pedido_id).first()
-        usados.append(
-            CupomUsadoResponse(
-                codigo=c.codigo,
-                descricao=c.descricao,
-                tipo=c.tipo,
-                valor=_formatar_valor_cupom(c),
-                validade=_formatar_validade(c),
-                pedido=f"Pedido nº {pedido.numero}" if pedido else "Pedido não encontrado",
-            )
+    usados: List[CupomUsadoResponse] = [
+        CupomUsadoResponse(
+            codigo=uso.cupom.codigo,
+            descricao=uso.cupom.descricao,
+            tipo=uso.cupom.tipo,
+            valor=_formatar_valor_cupom(uso.cupom),
+            validade=_formatar_validade(uso.cupom),
+            pedido=f"Pedido nº {uso.pedido.numero}" if uso.pedido else "Pedido não encontrado",
         )
+        for uso in usos
+    ]
 
     return CuponsResponse(ativos=ativos, usados=usados)
 

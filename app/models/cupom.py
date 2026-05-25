@@ -24,9 +24,9 @@ class CupomUsado(Base):
     __tablename__ = "cupons_usados"
 
     id = Column(Integer, primary_key=True, index=True)
-    cupom_id = Column(Integer, ForeignKey("cupons.id"), nullable=False)
-    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
-    pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
+    cupom_id = Column(Integer, ForeignKey("cupons.id"), nullable=False, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
+    pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False, index=True)
     usado_em = Column(DateTime(timezone=True), server_default=func.now())
 
     cupom = relationship("Cupom", back_populates="usos")

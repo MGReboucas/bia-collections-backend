@@ -10,7 +10,7 @@ class Pedido(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     numero = Column(String(20), unique=True, nullable=False, index=True)
-    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
     status = Column(String(50), default="Aguardando pagamento")
     forma_pagamento = Column(String(50), nullable=False)
     total = Column(Float, nullable=False)
@@ -35,8 +35,8 @@ class ItemPedido(Base):
     __tablename__ = "itens_pedido"
 
     id = Column(Integer, primary_key=True, index=True)
-    pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False)
-    produto_id = Column(Integer, ForeignKey("produtos.id"), nullable=False)
+    pedido_id = Column(Integer, ForeignKey("pedidos.id"), nullable=False, index=True)
+    produto_id = Column(Integer, ForeignKey("produtos.id"), nullable=False, index=True)
     nome_produto = Column(String(255), nullable=False)
     preco_unitario = Column(Float, nullable=False)
     tamanho = Column(String(20), nullable=True)

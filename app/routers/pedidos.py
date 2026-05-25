@@ -1,7 +1,8 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 
 from app.database import get_db
@@ -147,13 +148,18 @@ def criar_pedido(
 
 @router.get("", response_model=List[PedidoListItem])
 def listar_pedidos(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
     pedidos = (
         db.query(Pedido)
+        .options(joinedload(Pedido.itens))
         .filter(Pedido.usuario_id == current_user.id)
         .order_by(Pedido.criado_em.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
         .all()
     )
     return [

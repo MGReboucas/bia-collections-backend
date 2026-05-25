@@ -21,7 +21,7 @@ class Produto(Base):
     nome = Column(String(255), nullable=False)
     descricao = Column(Text, nullable=True)
     preco = Column(Float, nullable=False)
-    categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=True)
+    categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=True, index=True)
     imagem_url = Column(String(500), nullable=True)
     tamanhos = Column(String(500), default="[]")  # JSON serialized list
     cores = Column(String(500), default="[]")      # JSON serialized list
