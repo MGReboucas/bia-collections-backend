@@ -1,0 +1,11 @@
+from app.routers.auth import router as auth  # noqa: F401
+from app.routers.produtos import router as produtos  # noqa: F401
+from app.routers.categorias import router as categorias  # noqa: F401
+from app.routers.cep import router as cep  # noqa: F401
+from app.routers.frete import router as frete  # noqa: F401
+from app.routers.pedidos import router as pedidos  # noqa: F401
+from app.routers.usuario import router as usuario  # noqa: F401
+from app.routers.enderecos import router as enderecos  # noqa: F401
+from app.routers.cupons import router as cupons  # noqa: F401
+from app.routers.duvidas import router as duvidas  # noqa: F401
+from app.routers.pagamentos import router as pagamentos  # noqa: F401
