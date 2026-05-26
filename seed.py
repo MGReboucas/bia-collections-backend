@@ -63,6 +63,7 @@ def seed():
                 "categoria": "Blusas",
                 "tamanhos": ["P", "M", "G", "GG"],
                 "cores": ["Azul", "Branco"],
+                "imagem_url": "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Blusa Cropped Listrada",
@@ -71,6 +72,7 @@ def seed():
                 "categoria": "Blusas",
                 "tamanhos": ["P", "M", "G"],
                 "cores": ["Preto/Branco", "Rosa/Branco"],
+                "imagem_url": "https://images.unsplash.com/photo-1596755094514-f87e34085b2c?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Blusa Off-Shoulder Floral",
@@ -79,6 +81,7 @@ def seed():
                 "categoria": "Blusas",
                 "tamanhos": ["P", "M", "G", "GG"],
                 "cores": ["Floral Rosa", "Floral Azul"],
+                "imagem_url": "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Blusa de Malha Canelada",
@@ -87,6 +90,7 @@ def seed():
                 "categoria": "Blusas",
                 "tamanhos": ["P", "M", "G", "GG"],
                 "cores": ["Nude", "Preto", "Verde"],
+                "imagem_url": "https://images.unsplash.com/photo-1571945153237-4929e783af4a?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Vestido Midi Floral com Cinto",
@@ -95,6 +99,7 @@ def seed():
                 "categoria": "Vestidos",
                 "tamanhos": ["P", "M", "G"],
                 "cores": ["Floral Rosa", "Floral Terracota"],
+                "imagem_url": "https://images.unsplash.com/photo-1572804013427-4d7ca7268217?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Vestido Longo Boho",
@@ -103,6 +108,7 @@ def seed():
                 "categoria": "Vestidos",
                 "tamanhos": ["P", "M", "G", "GG"],
                 "cores": ["Bordô", "Azul Marinho"],
+                "imagem_url": "https://images.unsplash.com/photo-1509631179647-0177331693ae?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Calça Wide Leg Cintura Alta",
@@ -111,6 +117,7 @@ def seed():
                 "categoria": "Calças",
                 "tamanhos": ["36", "38", "40", "42", "44"],
                 "cores": ["Bege", "Preto", "Caramelo"],
+                "imagem_url": "https://images.unsplash.com/photo-1584370848010-d7fe6bc767ec?w=600&h=800&fit=crop&q=80",
             },
             {
                 "nome": "Óculos de Sol Redondo Retrô",
@@ -119,6 +126,7 @@ def seed():
                 "categoria": "Oculos",
                 "tamanhos": ["Único"],
                 "cores": ["Dourado/Rosa", "Dourado/Verde"],
+                "imagem_url": "https://images.unsplash.com/photo-1511499767150-a48a237f0083?w=600&h=800&fit=crop&q=80",
             },
         ]
 
@@ -131,6 +139,7 @@ def seed():
                         descricao=pd["descricao"],
                         preco=pd["preco"],
                         categoria_id=cat.id if cat else None,
+                        imagem_url=pd.get("imagem_url"),
                         tamanhos=json.dumps(pd["tamanhos"], ensure_ascii=False),
                         cores=json.dumps(pd["cores"], ensure_ascii=False),
                         ativo=True,
