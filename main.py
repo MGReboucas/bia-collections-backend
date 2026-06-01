@@ -32,7 +32,7 @@ os.makedirs("uploads", exist_ok=True)
 
 limiter = Limiter(key_func=get_remote_address)
 
-app = FastAPI(title="CuradoBem API", version="1.0.0")
+app = FastAPI(title="Bia Collections API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -65,5 +65,5 @@ app.include_router(admin, prefix="/api/v1")
 
 @app.get("/")
 def root():
-    return {"message": "CuradoBem API is running"}
+    return {"message": "Bia Collections API is running"}
 

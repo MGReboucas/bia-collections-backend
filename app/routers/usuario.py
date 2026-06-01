@@ -59,7 +59,7 @@ async def upload_foto(
     # Remove foto anterior se for local (Cloudinary ignora)
     delete_old_image(current_user.foto_url)
 
-    url = await upload_image(foto, folder="curadobem/avatars")
+    url = await upload_image(foto, folder="bia-collections/avatars")
     current_user.foto_url = url
     db.commit()
     db.refresh(current_user)

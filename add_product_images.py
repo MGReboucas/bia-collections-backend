@@ -31,7 +31,7 @@ PRODUCT_IMAGES = [
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads", "produtos")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-HEADERS = {"User-Agent": "CuradoBemBot/1.0"}
+HEADERS = {"User-Agent": "BiaCollectionsBot/1.0"}
 TIMEOUT = 20
 
 

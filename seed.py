@@ -34,7 +34,7 @@ def seed():
             db.add(
                 Usuario(
                     username="matheus-bia",
-                    email="admin@curadobem.com",
+                    email="admin@biacollections.com.br",
                     senha_hash=get_password_hash("Mb171017"),
                     nome_completo="Matheus",
                     is_admin=True,

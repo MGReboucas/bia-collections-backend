@@ -81,7 +81,7 @@ def criar_pagamento_pix(
     nome_partes = (current_user.nome_completo or current_user.username).split(" ", 1)
     payment_data = {
         "transaction_amount": float(pedido.total),
-        "description": f"CuradoBem — Pedido {pedido.numero}",
+        "description": f"Bia Collections — Pedido {pedido.numero}",
         "payment_method_id": "pix",
         "payer": {
             "email": current_user.email,

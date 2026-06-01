@@ -48,7 +48,7 @@ def _infer_content_type(file: UploadFile) -> str:
     return content_type
 
 
-async def upload_image(file: UploadFile, folder: str = "curadobem") -> str:
+async def upload_image(file: UploadFile, folder: str = "bia-collections") -> str:
     """
     Valida e faz upload de uma imagem.
     Retorna a URL pública do arquivo.

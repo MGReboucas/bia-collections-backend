@@ -109,7 +109,7 @@ def _split_csv(value: Optional[str]) -> str:
 async def _save_product_image(file: UploadFile | None) -> str | None:
     if not file or not file.filename:
         return None
-    return await upload_image(file, folder="curadobem/produtos")
+    return await upload_image(file, folder="bia-collections/produtos")
 
 
 def _produto_response(produto: Produto) -> dict:
