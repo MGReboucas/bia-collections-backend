@@ -13,13 +13,15 @@ router = APIRouter(prefix="/duvidas", tags=["duvidas"])
 
 @router.get("", response_model=List[DuvidaOut])
 def listar_duvidas(
+    status: Optional[str] = None,
     status_filtro: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
     query = db.query(Duvida).filter(Duvida.usuario_id == current_user.id)
-    if status_filtro in ("pendente", "respondida"):
-        query = query.filter(Duvida.status == status_filtro)
+    filtro = status_filtro or status
+    if filtro in ("pendente", "respondida"):
+        query = query.filter(Duvida.status == filtro)
     return query.order_by(Duvida.criado_em.desc()).all()
 
 

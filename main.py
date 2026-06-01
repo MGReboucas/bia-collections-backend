@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 import app.models  # noqa: F401 — registers all models with Base before create_all()
 from app.core.database import Base, engine
 from app.core.config import settings
-from app.routers import auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos
+from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos
 
 Base.metadata.create_all(bind=engine)
 
@@ -45,6 +45,7 @@ app.include_router(enderecos, prefix="/api/v1")
 app.include_router(cupons, prefix="/api/v1")
 app.include_router(duvidas, prefix="/api/v1")
 app.include_router(pagamentos, prefix="/api/v1")
+app.include_router(admin, prefix="/api/v1")
 
 
 @app.get("/")
