@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # URL pública do frontend (ex: https://seusite.com ou https://seusite.vercel.app)
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # Cloudinary — configure in .env para storage persistente em produção
+    # Obtenha em: https://cloudinary.com (free tier)
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
+
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_forte(cls, v: str) -> str:

@@ -26,6 +26,9 @@ httpx>=0.27.0
 # Upload de arquivos
 python-multipart>=0.0.9
 
+# Cloud storage (fotos de perfil e produtos)
+cloudinary>=1.40.0
+
 # Variáveis de ambiente
 python-dotenv>=1.0.0
 

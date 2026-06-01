@@ -1,8 +1,6 @@
 import json
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import List, Optional
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, field_validator
@@ -11,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.services.upload_service import upload_image
 from app.models.cupom import Cupom, CupomUsado
 from app.models.duvida import Duvida
 from app.models.pedido import Pedido
@@ -110,17 +109,7 @@ def _split_csv(value: Optional[str]) -> str:
 async def _save_product_image(file: UploadFile | None) -> str | None:
     if not file or not file.filename:
         return None
-
-    ext = Path(file.filename).suffix.lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-        raise HTTPException(status_code=422, detail="Formato de imagem inválido.")
-
-    upload_dir = Path("uploads")
-    upload_dir.mkdir(exist_ok=True)
-    filename = f"produto_{uuid4().hex[:12]}{ext}"
-    path = upload_dir / filename
-    path.write_bytes(await file.read())
-    return filename
+    return await upload_image(file, folder="curadobem/produtos")
 
 
 def _produto_response(produto: Produto) -> dict:
