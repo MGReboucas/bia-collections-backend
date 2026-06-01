@@ -10,8 +10,23 @@ import app.models  # noqa: F401 — registers all models with Base before create
 from app.core.database import Base, engine
 from app.core.config import settings
 from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos
+from sqlalchemy import text
 
 Base.metadata.create_all(bind=engine)
+
+# ── Startup migrations ────────────────────────────────────────────────────────
+with engine.connect() as _conn:
+    _conn.execute(text(
+        "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
+    ))
+    # Marca como admin qualquer usuário que seja 'matheus-bia' ou o antigo 'admin'
+    _conn.execute(text(
+        "UPDATE usuarios SET is_admin = TRUE, username = 'matheus-bia' WHERE username = 'admin'"
+    ))
+    _conn.execute(text(
+        "UPDATE usuarios SET is_admin = TRUE WHERE username = 'matheus-bia'"
+    ))
+    _conn.commit()
 
 os.makedirs("uploads", exist_ok=True)
 
