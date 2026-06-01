@@ -202,6 +202,7 @@ def listar_usuarios(
             "username": usuario.username,
             "email": usuario.email,
             "nome_completo": usuario.nome_completo,
+            "telefone": usuario.telefone,
             "criado_em": usuario.criado_em.isoformat() if usuario.criado_em else "",
             "is_admin": getattr(usuario, "is_admin", False) or usuario.username == "admin",
         }
