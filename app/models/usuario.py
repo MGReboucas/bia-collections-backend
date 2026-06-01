@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Boolean, Column, Integer, String, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -15,6 +15,7 @@ class Usuario(Base):
     nome_completo = Column(String(255), nullable=True)
     telefone = Column(String(20), nullable=True)
     foto_url = Column(String(500), nullable=True)
+    is_admin = Column(Boolean, nullable=False, default=False, server_default="0")
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
 
     pedidos = relationship("Pedido", back_populates="usuario")

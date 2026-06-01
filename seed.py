@@ -27,18 +27,28 @@ def seed():
 
     try:
         # ── Usuário admin ─────────────────────────────────────────────────────
-        if not db.query(Usuario).filter(Usuario.username == "admin").first():
+        admin = db.query(Usuario).filter(
+            (Usuario.username == "matheus-bia") | (Usuario.username == "admin")
+        ).first()
+        if not admin:
             db.add(
                 Usuario(
-                    username="admin",
+                    username="matheus-bia",
                     email="admin@curadobem.com",
-                    senha_hash=get_password_hash("admin123"),
-                    nome_completo="Administrador",
+                    senha_hash=get_password_hash("Mb171017"),
+                    nome_completo="Matheus",
+                    is_admin=True,
                 )
             )
-            print("✓ Usuário admin criado.")
+            print("[OK] Usuario admin criado.")
+        elif admin.username == "admin":
+            admin.username = "matheus-bia"
+            admin.senha_hash = get_password_hash("Mb171017")
+            admin.nome_completo = "Matheus"
+            admin.is_admin = True
+            print("[OK] Usuario admin atualizado.")
         else:
-            print("· Usuário admin já existe.")
+            print("[--] Usuario admin ja existe.")
 
         # ── Categorias ────────────────────────────────────────────────────────
         nomes_categorias = ["Blusas", "Vestidos", "Calças", "Oculos", "Bijuteria"]
