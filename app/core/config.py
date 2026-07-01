@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
+    # Admin padrão — usado no startup para garantir que o admin existe
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_forte(cls, v: str) -> str:
