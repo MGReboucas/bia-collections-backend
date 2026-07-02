@@ -2,13 +2,17 @@ import json
 from datetime import date, datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import (
+    get_current_master_admin_user,
+    is_master_admin_email,
+    log_admin_access_denied,
+)
 from app.services.upload_service import upload_image
 from app.models.cupom import Cupom, CupomUsado
 from app.models.duvida import Duvida
@@ -19,7 +23,11 @@ from app.schemas.duvida import DuvidaOut
 from app.schemas.pedido import PedidoListItem
 from app.services.frete_service import formatar_preco
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(get_current_master_admin_user)],
+)
 
 ORDER_STATUSES = {
     "Aguardando pagamento",
@@ -79,6 +87,10 @@ class StatusPedidoPayload(BaseModel):
         return value
 
 
+class UsuarioAdminPayload(BaseModel):
+    is_admin: bool
+
+
 class RespostaDuvidaPayload(BaseModel):
     resposta: str
 
@@ -93,10 +105,7 @@ class RespostaDuvidaPayload(BaseModel):
         return value
 
 
-def get_current_admin(current_user: Usuario = Depends(get_current_user)) -> Usuario:
-    if getattr(current_user, "is_admin", False) or current_user.username == "admin":
-        return current_user
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acesso restrito ao admin.")
+get_current_admin = get_current_master_admin_user
 
 
 def _split_csv(value: Optional[str]) -> str:
@@ -123,6 +132,18 @@ def _produto_response(produto: Produto) -> dict:
         "imagem_url": produto.imagem_url,
         "tamanhos": json.loads(produto.tamanhos) if produto.tamanhos else [],
         "cores": json.loads(produto.cores) if produto.cores else [],
+    }
+
+
+def _usuario_admin_response(usuario: Usuario) -> dict:
+    return {
+        "id": usuario.id,
+        "username": usuario.username,
+        "email": usuario.email,
+        "nome_completo": usuario.nome_completo,
+        "telefone": usuario.telefone,
+        "criado_em": usuario.criado_em.isoformat() if usuario.criado_em else "",
+        "is_admin": is_master_admin_email(usuario.email) or bool(getattr(usuario, "is_admin", False)),
     }
 
 
@@ -196,18 +217,63 @@ def listar_usuarios(
     _: Usuario = Depends(get_current_admin),
 ):
     usuarios = db.query(Usuario).order_by(Usuario.criado_em.desc()).all()
-    return [
-        {
-            "id": usuario.id,
-            "username": usuario.username,
-            "email": usuario.email,
-            "nome_completo": usuario.nome_completo,
-            "telefone": usuario.telefone,
-            "criado_em": usuario.criado_em.isoformat() if usuario.criado_em else "",
-            "is_admin": getattr(usuario, "is_admin", False) or usuario.username == "admin",
-        }
-        for usuario in usuarios
-    ]
+    return [_usuario_admin_response(usuario) for usuario in usuarios]
+
+
+@router.put("/usuarios/{usuario_id}/admin")
+def atualizar_admin_usuario(
+    usuario_id: int,
+    data: UsuarioAdminPayload,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: Usuario = Depends(get_current_admin),
+):
+    usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
+
+    if usuario.id == current_admin.id or is_master_admin_email(usuario.email):
+        log_admin_access_denied(
+            current_admin,
+            request.url.path,
+            "tentativa_alterar_usuario_mestre",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nao e permitido alterar o privilegio do usuario mestre.",
+        )
+
+    usuario.is_admin = data.is_admin
+    db.commit()
+    db.refresh(usuario)
+    return _usuario_admin_response(usuario)
+
+
+@router.delete("/usuarios/{usuario_id}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_usuario(
+    usuario_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: Usuario = Depends(get_current_admin),
+):
+    usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado.")
+
+    if usuario.id == current_admin.id or is_master_admin_email(usuario.email):
+        log_admin_access_denied(
+            current_admin,
+            request.url.path,
+            "tentativa_excluir_usuario_mestre",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nao e permitido excluir o usuario mestre.",
+        )
+
+    db.delete(usuario)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/categorias", status_code=status.HTTP_201_CREATED)

@@ -24,6 +24,12 @@ if "is_admin" not in {column["name"] for column in _inspector.get_columns("usuar
         ))
         _conn.commit()
 
+with engine.begin() as _conn:
+    _conn.execute(
+        text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),
+        {"is_admin": True, "email": settings.MASTER_ADMIN_EMAIL.strip().lower()},
+    )
+
 os.makedirs("uploads", exist_ok=True)
 
 limiter = Limiter(key_func=get_remote_address)

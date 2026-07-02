@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
     # kept for backward compatibility
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
+    MASTER_ADMIN_EMAIL: str = "reboucas444@gmail.com"
 
     # CORS — lista de origens permitidas (separadas por vírgula no .env)
     # Ex: ALLOWED_ORIGINS=http://localhost:3000,https://meusite.com
@@ -43,6 +44,14 @@ class Settings(BaseSettings):
                 "SECRET_KEY deve ter pelo menos 32 caracteres. "
                 "Gere uma com: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
+        return v
+
+    @field_validator("MASTER_ADMIN_EMAIL")
+    @classmethod
+    def master_admin_email_valido(cls, v: str) -> str:
+        v = v.strip().lower()
+        if "@" not in v or len(v) > 255:
+            raise ValueError("MASTER_ADMIN_EMAIL inválido.")
         return v
 
     model_config = {"env_file": ".env"}

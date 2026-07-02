@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, is_master_admin_email
 from app.models.usuario import Usuario
 from app.schemas.usuario import UsuarioPerfil, AtualizarPerfil
 from app.services.upload_service import upload_image, delete_old_image
@@ -10,10 +10,15 @@ from app.services.upload_service import upload_image, delete_old_image
 router = APIRouter(prefix="/usuario", tags=["usuario"])
 
 
+def _usuario_perfil_response(user: Usuario) -> UsuarioPerfil:
+    perfil = UsuarioPerfil.model_validate(user)
+    perfil.is_admin = is_master_admin_email(user.email)
+    return perfil
+
 
 @router.get("/perfil", response_model=UsuarioPerfil)
 def obter_perfil(current_user: Usuario = Depends(get_current_user)):
-    return current_user
+    return _usuario_perfil_response(current_user)
 
 
 @router.put("/perfil", response_model=UsuarioPerfil)
@@ -47,7 +52,7 @@ def atualizar_perfil(
 
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return _usuario_perfil_response(current_user)
 
 
 @router.post("/perfil/foto", response_model=UsuarioPerfil)
@@ -63,5 +68,5 @@ async def upload_foto(
     current_user.foto_url = url
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return _usuario_perfil_response(current_user)
 

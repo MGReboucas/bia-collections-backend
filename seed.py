@@ -14,6 +14,9 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import app.models  # noqa: F401 — registers all models with Base
+from sqlalchemy import func
+
+from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.core.security import get_password_hash
 from app.models.usuario import Usuario
@@ -27,28 +30,34 @@ def seed():
 
     try:
         # ── Usuário admin ─────────────────────────────────────────────────────
-        admin = db.query(Usuario).filter(
-            (Usuario.username == "matheus-bia") | (Usuario.username == "admin")
-        ).first()
+        master_admin_email = settings.MASTER_ADMIN_EMAIL.strip().lower()
+        admin = (
+            db.query(Usuario)
+            .filter(func.lower(func.trim(Usuario.email)) == master_admin_email)
+            .first()
+        )
         if not admin:
+            username_base = master_admin_email.split("@", 1)[0]
+            username = username_base
+            suffix = 2
+            while db.query(Usuario).filter(Usuario.username == username).first():
+                username = f"{username_base}-{suffix}"
+                suffix += 1
             db.add(
                 Usuario(
-                    username="matheus-bia",
-                    email="admin@biacollections.com.br",
+                    username=username,
+                    email=master_admin_email,
                     senha_hash=get_password_hash("Mb171017"),
                     nome_completo="Matheus",
                     is_admin=True,
                 )
             )
-            print("[OK] Usuario admin criado.")
-        elif admin.username == "admin":
-            admin.username = "matheus-bia"
-            admin.senha_hash = get_password_hash("Mb171017")
-            admin.nome_completo = "Matheus"
+            print("[OK] Usuario admin mestre criado.")
+        elif not admin.is_admin:
             admin.is_admin = True
-            print("[OK] Usuario admin atualizado.")
+            print("[OK] Usuario admin mestre atualizado.")
         else:
-            print("[--] Usuario admin ja existe.")
+            print("[--] Usuario admin mestre ja existe.")
 
         # ── Categorias ────────────────────────────────────────────────────────
         nomes_categorias = ["Blusas", "Vestidos", "Calças", "Oculos", "Bijuteria"]

@@ -7,6 +7,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import is_master_admin_email
 from app.models.usuario import Usuario
 from app.models.reset_senha import ResetSenha
 from app.core.security import verify_password, get_password_hash, create_access_token
@@ -26,6 +27,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
 
 
+def _usuario_basico_response(user: Usuario) -> UsuarioBasico:
+    usuario = UsuarioBasico.model_validate(user)
+    usuario.is_admin = is_master_admin_email(user.email)
+    return usuario
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
@@ -42,7 +49,7 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     token = create_access_token({"sub": user.username})
     return TokenResponse(
         access_token=token,
-        usuario=UsuarioBasico.model_validate(user),
+        usuario=_usuario_basico_response(user),
     )
 
 
@@ -75,7 +82,7 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     token = create_access_token({"sub": user.username})
     return TokenResponse(
         access_token=token,
-        usuario=UsuarioBasico.model_validate(user),
+        usuario=_usuario_basico_response(user),
     )
 
 
