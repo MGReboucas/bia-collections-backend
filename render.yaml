@@ -35,9 +35,5 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
-      - key: ADMIN_USERNAME
-        sync: false
-      - key: ADMIN_PASSWORD
-        sync: false
       - key: ALLOWED_ORIGINS
         sync: false

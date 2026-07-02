@@ -7,43 +7,22 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 import app.models  # noqa: F401 — registers all models with Base before create_all()
-from app.core.database import Base, engine, SessionLocal
+from app.core.database import Base, engine
 from app.core.config import settings
-from app.core.security import get_password_hash, verify_password
 from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos
-from app.models.usuario import Usuario
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 Base.metadata.create_all(bind=engine)
 
 # ── Startup migrations ────────────────────────────────────────────────────────
-with engine.connect() as _conn:
-    _conn.execute(text(
-        "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
-    ))
-    _conn.commit()
-
-# ── Garante usuário admin via .env ────────────────────────────────────────────
-if settings.ADMIN_USERNAME and settings.ADMIN_PASSWORD:
-    _db = SessionLocal()
-    try:
-        _admin = _db.query(Usuario).filter(Usuario.username == settings.ADMIN_USERNAME).first()
-        if not _admin:
-            _admin = Usuario(
-                username=settings.ADMIN_USERNAME,
-                email=f"{settings.ADMIN_USERNAME}@curadobem.com",
-                senha_hash=get_password_hash(settings.ADMIN_PASSWORD),
-                nome_completo="Admin",
-                is_admin=True,
-            )
-            _db.add(_admin)
-        else:
-            if not verify_password(settings.ADMIN_PASSWORD, _admin.senha_hash):
-                _admin.senha_hash = get_password_hash(settings.ADMIN_PASSWORD)
-            _admin.is_admin = True
-        _db.commit()
-    finally:
-        _db.close()
+_inspector = inspect(engine)
+if "is_admin" not in {column["name"] for column in _inspector.get_columns("usuarios")}:
+    default_value = "0" if engine.dialect.name == "sqlite" else "FALSE"
+    with engine.connect() as _conn:
+        _conn.execute(text(
+            f"ALTER TABLE usuarios ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT {default_value}"
+        ))
+        _conn.commit()
 
 os.makedirs("uploads", exist_ok=True)
 
