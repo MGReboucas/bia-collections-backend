@@ -11,7 +11,15 @@ from app.dependencies import is_master_admin_email
 from app.models.usuario import Usuario
 from app.models.reset_senha import ResetSenha
 from app.core.security import verify_password, get_password_hash, create_access_token
-from app.core.email import enviar_email_reset
+from app.core.email import enviar_email_codigo_acesso, enviar_email_reset
+from app.services.two_factor_service import (
+    CreatedTwoFactorChallenge,
+    TwoFactorError,
+    create_resend_challenge,
+    create_two_factor_challenge,
+    invalidate_challenge,
+    verify_two_factor_code,
+)
 from app.schemas.auth import (
     LoginRequest,
     CadastroRequest,
@@ -19,8 +27,12 @@ from app.schemas.auth import (
     SolicitarRedefinicaoRequest,
     VerificarCodigoRequest,
     RedefinirSenhaRequest,
+    ResendTwoFactorRequest,
+    ResendTwoFactorResponse,
     TokenResponse,
+    TwoFactorChallengeResponse,
     UsuarioBasico,
+    VerifyTwoFactorRequest,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -33,7 +45,42 @@ def _usuario_basico_response(user: Usuario) -> UsuarioBasico:
     return usuario
 
 
-@router.post("/login", response_model=TokenResponse)
+def _token_response(user: Usuario) -> TokenResponse:
+    return TokenResponse(
+        access_token=create_access_token({"sub": user.username}),
+        usuario=_usuario_basico_response(user),
+    )
+
+
+def _send_two_factor_email_or_fail(db: Session, challenge: CreatedTwoFactorChallenge, email: str) -> None:
+    try:
+        enviar_email_codigo_acesso(email, challenge.codigo)
+    except Exception:
+        invalidate_challenge(db, challenge.challenge)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Nao foi possivel enviar o e-mail. Tente novamente.",
+        )
+
+
+def _challenge_response(
+    challenge: CreatedTwoFactorChallenge,
+    user: Usuario,
+    message: str,
+) -> TwoFactorChallengeResponse:
+    return TwoFactorChallengeResponse(
+        two_factor_token=challenge.token,
+        email=user.email,
+        expires_in=challenge.expires_in,
+        message=message,
+    )
+
+
+def _raise_two_factor_error(error: TwoFactorError) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.detail)
+
+
+@router.post("/login", response_model=TwoFactorChallengeResponse)
 @limiter.limit("10/minute")
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     user = (
@@ -46,14 +93,12 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuário ou senha inválidos.",
         )
-    token = create_access_token({"sub": user.username})
-    return TokenResponse(
-        access_token=token,
-        usuario=_usuario_basico_response(user),
-    )
+    challenge = create_two_factor_challenge(db, user)
+    _send_two_factor_email_or_fail(db, challenge, user.email)
+    return _challenge_response(challenge, user, "Codigo enviado por e-mail.")
 
 
-@router.post("/cadastro", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/cadastro", response_model=TwoFactorChallengeResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_db)):
     if data.senha != data.confirma_senha:
@@ -79,10 +124,35 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.add(user)
     db.commit()
     db.refresh(user)
-    token = create_access_token({"sub": user.username})
-    return TokenResponse(
-        access_token=token,
-        usuario=_usuario_basico_response(user),
+    challenge = create_two_factor_challenge(db, user)
+    _send_two_factor_email_or_fail(db, challenge, user.email)
+    return _challenge_response(challenge, user, "Conta criada. Codigo enviado por e-mail.")
+
+
+@router.post("/login/verificar-2fa", response_model=TokenResponse)
+def verificar_2fa(data: VerifyTwoFactorRequest, db: Session = Depends(get_db)):
+    try:
+        user = verify_two_factor_code(db, data.two_factor_token, data.codigo)
+    except TwoFactorError as error:
+        _raise_two_factor_error(error)
+
+    return _token_response(user)
+
+
+@router.post("/login/reenviar-2fa", response_model=ResendTwoFactorResponse)
+def reenviar_2fa(data: ResendTwoFactorRequest, db: Session = Depends(get_db)):
+    try:
+        challenge = create_resend_challenge(db, data.two_factor_token)
+    except TwoFactorError as error:
+        _raise_two_factor_error(error)
+
+    user = challenge.challenge.usuario
+    _send_two_factor_email_or_fail(db, challenge, user.email)
+    return ResendTwoFactorResponse(
+        two_factor_token=challenge.token,
+        email=user.email,
+        expires_in=challenge.expires_in,
+        message="Novo codigo enviado.",
     )
 
 
