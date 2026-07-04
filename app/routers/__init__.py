@@ -9,4 +9,5 @@ from app.routers.enderecos import router as enderecos  # noqa: F401
 from app.routers.cupons import router as cupons  # noqa: F401
 from app.routers.duvidas import router as duvidas  # noqa: F401
 from app.routers.pagamentos import router as pagamentos  # noqa: F401
+from app.routers.banners import router as banners  # noqa: F401
 from app.routers.admin import router as admin  # noqa: F401
