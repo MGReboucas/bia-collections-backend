@@ -18,6 +18,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.reset_senha import ResetSenha
+from app.models.produto import Categoria, Produto
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
 from app.services.two_factor_service import hash_two_factor_token
@@ -558,6 +559,77 @@ def test_master_admin_pode_alterar_e_deletar_usuario_comum(client):
 
     delete = client.delete(f"/api/v1/admin/usuarios/{alvo_id}", headers=headers)
     assert delete.status_code == 204
+
+
+def test_master_admin_nao_exclui_categoria_com_produto_ativo(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        categoria = Categoria(nome="Bolsas")
+        db.add(categoria)
+        db.flush()
+        db.add(
+            Produto(
+                nome="Bolsa teste",
+                preco=99.9,
+                categoria_id=categoria.id,
+                ativo=True,
+            )
+        )
+        db.commit()
+        categoria_id = categoria.id
+    finally:
+        db.close()
+
+    response = client.delete(
+        f"/api/v1/admin/categorias/{categoria_id}",
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 409
+
+
+def test_master_admin_exclui_categoria_depois_de_soft_delete_dos_produtos(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        categoria = Categoria(nome="Vestidos")
+        db.add(categoria)
+        db.flush()
+        produto = Produto(
+            nome="Vestido teste",
+            preco=129.9,
+            categoria_id=categoria.id,
+            ativo=True,
+        )
+        db.add(produto)
+        db.commit()
+        categoria_id = categoria.id
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    headers = auth_headers("master")
+    delete_produto = client.delete(
+        f"/api/v1/admin/produtos/{produto_id}",
+        headers=headers,
+    )
+    delete_categoria = client.delete(
+        f"/api/v1/admin/categorias/{categoria_id}",
+        headers=headers,
+    )
+
+    assert delete_produto.status_code == 204
+    assert delete_categoria.status_code == 204
+
+    db = SessionLocal()
+    try:
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.ativo is False
+        assert produto.categoria_id is None
+        assert db.query(Categoria).filter(Categoria.id == categoria_id).first() is None
+    finally:
+        db.close()
 
 
 def test_payload_token_e_cookie_manipulados_nao_liberam_admin(client):

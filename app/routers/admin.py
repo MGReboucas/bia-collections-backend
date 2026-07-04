@@ -302,9 +302,17 @@ def deletar_categoria(
     categoria = db.query(Categoria).filter(Categoria.id == categoria_id).first()
     if not categoria:
         raise HTTPException(status_code=404, detail="Categoria não encontrada.")
-    if db.query(Produto).filter(Produto.categoria_id == categoria.id).first():
+    if (
+        db.query(Produto)
+        .filter(Produto.categoria_id == categoria.id, Produto.ativo.is_(True))
+        .first()
+    ):
         raise HTTPException(status_code=409, detail="Categoria possui produtos vinculados.")
 
+    db.query(Produto).filter(
+        Produto.categoria_id == categoria.id,
+        Produto.ativo.is_not(True),
+    ).update({Produto.categoria_id: None}, synchronize_session=False)
     db.delete(categoria)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
