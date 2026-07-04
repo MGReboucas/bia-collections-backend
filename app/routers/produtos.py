@@ -1,4 +1,5 @@
 import json
+import unicodedata
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session, joinedload
@@ -10,6 +11,26 @@ from app.schemas.produto import ProdutoListResponse, ProdutoDetalhe, ProdutoList
 from app.services.frete_service import formatar_preco
 
 router = APIRouter(prefix="/produtos", tags=["produtos"])
+
+
+def _normalize_category(value: str | None) -> str:
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", value or "")
+        if unicodedata.category(char) != "Mn"
+    ).lower()
+
+
+def _find_category_by_slug(db: Session, value: str) -> Categoria | None:
+    normalized = _normalize_category(value)
+    return next(
+        (
+            category
+            for category in db.query(Categoria).all()
+            if _normalize_category(category.nome) == normalized
+        ),
+        None,
+    )
 
 
 @router.get("", response_model=ProdutoListResponse)
@@ -37,9 +58,10 @@ def listar_produtos(
         query = query.filter(Produto.nome.ilike(f"%{busca}%"))
 
     if categoria:
-        cat = db.query(Categoria).filter(Categoria.nome == categoria).first()
-        if cat:
-            query = query.filter(Produto.categoria_id == cat.id)
+        cat = _find_category_by_slug(db, categoria)
+        if not cat:
+            return ProdutoListResponse(total=0, page=page, limit=limit, itens=[])
+        query = query.filter(Produto.categoria_id == cat.id)
 
     total = query.count()
     produtos = query.offset((page - 1) * limit).limit(limit).all()

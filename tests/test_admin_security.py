@@ -26,6 +26,7 @@ from main import app
 
 PASSWORD = "senha-segura-123"
 auth_router_module = importlib.import_module("app.routers.auth")
+admin_module = importlib.import_module("app.routers.admin")
 email_module = importlib.import_module("app.core.email")
 
 
@@ -559,6 +560,89 @@ def test_master_admin_pode_alterar_e_deletar_usuario_comum(client):
 
     delete = client.delete(f"/api/v1/admin/usuarios/{alvo_id}", headers=headers)
     assert delete.status_code == 204
+
+
+def test_master_admin_cria_categoria_com_json_sem_imagem(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+
+    response = client.post(
+        "/api/v1/admin/categorias",
+        json={"nome": "Acessorios"},
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "id": response.json()["id"],
+        "nome": "Acessorios",
+        "imagem_url": None,
+    }
+
+
+def test_master_admin_cria_categoria_com_upload_de_imagem(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+
+    async def fake_upload_image(file, folder):
+        assert file.filename == "bolsas.webp"
+        assert folder == "bia-collections/categorias"
+        return "https://cdn.example.test/bolsas.webp"
+
+    monkeypatch.setattr(admin_module, "upload_image", fake_upload_image)
+
+    response = client.post(
+        "/api/v1/admin/categorias",
+        data={"nome": "Bolsas"},
+        files={"imagem": ("bolsas.webp", b"fake image", "image/webp")},
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["nome"] == "Bolsas"
+    assert response.json()["imagem_url"] == "https://cdn.example.test/bolsas.webp"
+
+    categorias = client.get("/api/v1/categorias")
+    assert categorias.status_code == 200
+    assert categorias.json() == [
+        {
+            "id": response.json()["id"],
+            "nome": "Bolsas",
+            "imagem_url": "https://cdn.example.test/bolsas.webp",
+        }
+    ]
+
+
+def test_listar_produtos_filtra_categoria_por_slug_normalizado(client):
+    db = SessionLocal()
+    try:
+        categoria = Categoria(nome="\u00d3culos")
+        outra_categoria = Categoria(nome="Bolsas")
+        db.add_all([categoria, outra_categoria])
+        db.flush()
+        db.add_all([
+            Produto(
+                nome="Oculos teste",
+                preco=89.9,
+                categoria_id=categoria.id,
+                ativo=True,
+            ),
+            Produto(
+                nome="Bolsa teste",
+                preco=129.9,
+                categoria_id=outra_categoria.id,
+                ativo=True,
+            ),
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/v1/produtos?categoria=oculos")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["itens"][0]["nome"] == "Oculos teste"
+    assert body["itens"][0]["categoria"] == "\u00d3culos"
 
 
 def test_master_admin_nao_exclui_categoria_com_produto_ativo(client):

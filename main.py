@@ -24,6 +24,11 @@ if "is_admin" not in {column["name"] for column in _inspector.get_columns("usuar
         ))
         _conn.commit()
 
+if "imagem_url" not in {column["name"] for column in inspect(engine).get_columns("categorias")}:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE categorias ADD COLUMN imagem_url VARCHAR(500)"))
+        _conn.commit()
+
 with engine.begin() as _conn:
     _conn.execute(
         text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),

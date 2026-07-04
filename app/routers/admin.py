@@ -121,6 +121,20 @@ async def _save_product_image(file: UploadFile | None) -> str | None:
     return await upload_image(file, folder="bia-collections/produtos")
 
 
+async def _save_category_image(file: UploadFile | None) -> str | None:
+    if not file or not file.filename:
+        return None
+    return await upload_image(file, folder="bia-collections/categorias")
+
+
+def _categoria_response(categoria: Categoria) -> dict:
+    return {
+        "id": categoria.id,
+        "nome": categoria.nome,
+        "imagem_url": categoria.imagem_url,
+    }
+
+
 def _produto_response(produto: Produto) -> dict:
     return {
         "id": produto.id,
@@ -277,20 +291,47 @@ def deletar_usuario(
 
 
 @router.post("/categorias", status_code=status.HTTP_201_CREATED)
-def criar_categoria(
-    data: CategoriaPayload,
+async def criar_categoria(
+    request: Request,
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
+    content_type = request.headers.get("content-type", "")
+    imagem = None
+    imagem_url = None
+
+    if content_type.startswith(("multipart/form-data", "application/x-www-form-urlencoded")):
+        form = await request.form()
+        nome = form.get("nome")
+        candidate = form.get("imagem") or form.get("foto")
+        if getattr(candidate, "filename", None):
+            imagem = candidate
+        imagem_url_value = form.get("imagem_url")
+        imagem_url = str(imagem_url_value).strip() if imagem_url_value else None
+    else:
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        nome = body.get("nome") if isinstance(body, dict) else None
+        imagem_url_value = body.get("imagem_url") if isinstance(body, dict) else None
+        imagem_url = str(imagem_url_value).strip() if imagem_url_value else None
+
+    try:
+        data = CategoriaPayload(nome=str(nome or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Nome da categoria muito curto.") from exc
+
     exists = db.query(Categoria).filter(func.lower(Categoria.nome) == data.nome.lower()).first()
     if exists:
         raise HTTPException(status_code=409, detail="Categoria já cadastrada.")
 
-    categoria = Categoria(nome=data.nome)
+    img = await _save_category_image(imagem)
+    categoria = Categoria(nome=data.nome, imagem_url=img or imagem_url)
     db.add(categoria)
     db.commit()
     db.refresh(categoria)
-    return {"id": categoria.id, "nome": categoria.nome}
+    return _categoria_response(categoria)
 
 
 @router.delete("/categorias/{categoria_id}", status_code=status.HTTP_204_NO_CONTENT)

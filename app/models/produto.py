@@ -10,6 +10,7 @@ class Categoria(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String(100), nullable=False, unique=True)
+    imagem_url = Column(String(500), nullable=True)
 
     produtos = relationship("Produto", back_populates="categoria")
 

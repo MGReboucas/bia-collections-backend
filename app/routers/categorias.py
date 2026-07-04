@@ -10,6 +10,10 @@ router = APIRouter(prefix="/categorias", tags=["categorias"])
 def listar_categorias(response: Response, db: Session = Depends(get_db)):
     response.headers["Cache-Control"] = "public, max-age=300"
     return [
-        {"id": categoria.id, "nome": categoria.nome}
+        {
+            "id": categoria.id,
+            "nome": categoria.nome,
+            "imagem_url": categoria.imagem_url,
+        }
         for categoria in db.query(Categoria).order_by(Categoria.nome.asc()).all()
     ]
