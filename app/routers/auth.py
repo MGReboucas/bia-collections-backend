@@ -2,7 +2,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import func
@@ -71,6 +71,23 @@ def _token_response(user: Usuario) -> TokenResponse:
     return TokenResponse(
         access_token=create_access_token({"sub": user.username}),
         usuario=_usuario_basico_response(user),
+    )
+
+
+_COOKIE_NAME = "cb_token"
+_COOKIE_MAX_AGE = 86400  # 1 day in seconds
+
+
+def _set_auth_cookie(response: Response, user: Usuario) -> None:
+    token = create_access_token({"sub": user.username})
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        max_age=_COOKIE_MAX_AGE,
+        secure=False,  # set to True behind HTTPS in production
     )
 
 
@@ -152,12 +169,13 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
 
 
 @router.post("/login/verificar-2fa", response_model=TokenResponse)
-def verificar_2fa(data: VerifyTwoFactorRequest, db: Session = Depends(get_db)):
+def verificar_2fa(data: VerifyTwoFactorRequest, response: Response, db: Session = Depends(get_db)):
     try:
         user = verify_two_factor_code(db, data.two_factor_token, data.codigo)
     except TwoFactorError as error:
         _raise_two_factor_error(error)
 
+    _set_auth_cookie(response, user)
     return _token_response(user)
 
 
@@ -295,3 +313,10 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {"mensagem": "Senha redefinida com sucesso."}
+
+
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(key=_COOKIE_NAME, path="/", httponly=True, samesite="lax")
+    return {"mensagem": "Logout realizado com sucesso."}
+

@@ -7,6 +7,8 @@ class ProdutoListItem(BaseModel):
     nome: str
     preco: float
     preco_formatado: str
+    preco_promocional: Optional[float] = None
+    estoque: Optional[int] = None
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
     tamanhos: List[str] = []
@@ -19,6 +21,8 @@ class ProdutoDetalhe(BaseModel):
     descricao: Optional[str] = None
     preco: float
     preco_formatado: str
+    preco_promocional: Optional[float] = None
+    estoque: Optional[int] = None
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
     tamanhos: List[str] = []

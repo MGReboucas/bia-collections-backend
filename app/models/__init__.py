@@ -8,6 +8,8 @@ from app.models.endereco import Endereco  # noqa: F401
 from app.models.cupom import Cupom, CupomUsado  # noqa: F401
 from app.models.duvida import Duvida  # noqa: F401
 from app.models.pagamento import Pagamento  # noqa: F401
+from app.models.avaliacao import Avaliacao  # noqa: F401
+from app.models.banner import Banner  # noqa: F401
 # Legacy models (kept for backward compatibility)
 from app.models.model import (  # noqa: F401
     Client, Category, Product, ImageProduct,

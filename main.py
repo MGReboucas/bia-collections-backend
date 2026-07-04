@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 import app.models  # noqa: F401 — registers all models with Base before create_all()
 from app.core.database import Base, engine
 from app.core.config import settings
-from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos
+from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners
 from sqlalchemy import inspect, text
 
 Base.metadata.create_all(bind=engine)
@@ -29,6 +29,33 @@ if "imagem_url" not in {column["name"] for column in inspect(engine).get_columns
         _conn.execute(text("ALTER TABLE categorias ADD COLUMN imagem_url VARCHAR(500)"))
         _conn.commit()
 
+# ── New column migrations ─────────────────────────────────────────────────────
+_pedidos_cols = {col["name"] for col in inspect(engine).get_columns("pedidos")}
+if "codigo_rastreio" not in _pedidos_cols:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE pedidos ADD COLUMN codigo_rastreio VARCHAR(100)"))
+        _conn.commit()
+
+_cupons_cols = {col["name"] for col in inspect(engine).get_columns("cupons")}
+if "max_usos" not in _cupons_cols:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE cupons ADD COLUMN max_usos INTEGER"))
+        _conn.commit()
+if "total_usos" not in _cupons_cols:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE cupons ADD COLUMN total_usos INTEGER NOT NULL DEFAULT 0"))
+        _conn.commit()
+
+_produtos_cols = {col["name"] for col in inspect(engine).get_columns("produtos")}
+if "preco_promocional" not in _produtos_cols:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE produtos ADD COLUMN preco_promocional DECIMAL(10,2)"))
+        _conn.commit()
+if "estoque" not in _produtos_cols:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE produtos ADD COLUMN estoque INTEGER"))
+        _conn.commit()
+
 with engine.begin() as _conn:
     _conn.execute(
         text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),
@@ -45,15 +72,17 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# CORS — usamos Bearer token no header Authorization, não cookies.
-# allow_credentials=False é correto para esse modelo de auth.
-# Em produção, restrinja ALLOWED_ORIGINS no .env.
+# CORS — when using httpOnly cookies, allow_credentials must be True and
+# ALLOWED_ORIGINS must NOT be ["*"]. Set ALLOWED_ORIGINS in .env for production.
+_origins = settings.ALLOWED_ORIGINS
+_allow_credentials = "*" not in _origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=False,
+    allow_origins=_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "Cookie"],
 )
 
 app.include_router(auth, prefix="/api/v1")
@@ -67,6 +96,7 @@ app.include_router(enderecos, prefix="/api/v1")
 app.include_router(cupons, prefix="/api/v1")
 app.include_router(duvidas, prefix="/api/v1")
 app.include_router(pagamentos, prefix="/api/v1")
+app.include_router(banners, prefix="/api/v1")
 app.include_router(admin, prefix="/api/v1")
 
 

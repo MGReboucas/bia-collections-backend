@@ -26,8 +26,11 @@ class Produto(Base):
     imagem_url = Column(String(500), nullable=True)
     tamanhos = Column(String(500), default="[]")  # JSON serialized list
     cores = Column(String(500), default="[]")      # JSON serialized list
+    preco_promocional = Column(Float, nullable=True)
+    estoque = Column(Integer, nullable=True)
     ativo = Column(Boolean, default=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
 
     categoria = relationship("Categoria", back_populates="produtos")
     itens_pedido = relationship("ItemPedido", back_populates="produto")
+    avaliacoes = relationship("Avaliacao", back_populates="produto")

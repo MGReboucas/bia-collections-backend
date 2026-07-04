@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -10,7 +10,8 @@ from app.database import get_db
 from app.core.config import settings
 from app.core.security import decode_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+# auto_error=False so we can fall back to the httpOnly cookie
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 logger = logging.getLogger("app.security")
 
 
@@ -54,18 +55,24 @@ def log_admin_access_denied(user: Any, route: str, reason: str) -> None:
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
     from app.models.usuario import Usuario
+
+    # Prefer Authorization header; fall back to httpOnly cookie
+    actual_token = token or request.cookies.get("cb_token")
 
     exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Credenciais inválidas.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if not actual_token:
+        raise exc
     try:
-        payload = decode_token(token)
+        payload = decode_token(actual_token)
         username: str = payload.get("sub")
         if username is None:
             raise exc

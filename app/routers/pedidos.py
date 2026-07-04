@@ -79,6 +79,9 @@ def criar_pedido(
         if ja_usado:
             raise HTTPException(status_code=422, detail="Cupom já utilizado.")
 
+        if cupom.max_usos is not None and cupom.total_usos >= cupom.max_usos:
+            raise HTTPException(status_code=422, detail="Cupom esgotado.")
+
         if cupom.tipo == "porcentagem":
             desconto = round(total * (cupom.valor / 100), 2)
         elif cupom.tipo == "valor":
@@ -132,6 +135,7 @@ def criar_pedido(
                     pedido_id=pedido.id,
                 )
             )
+            cupom_obj.total_usos = (cupom_obj.total_usos or 0) + 1
 
     db.commit()
     db.refresh(pedido)

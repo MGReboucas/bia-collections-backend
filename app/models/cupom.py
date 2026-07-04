@@ -16,6 +16,8 @@ class Cupom(Base):
     validade = Column(Date, nullable=False)
     ativo = Column(Boolean, default=True)
     valor_minimo_pedido = Column(Float, default=0.0)
+    max_usos = Column(Integer, nullable=True)
+    total_usos = Column(Integer, default=0, nullable=False)
 
     usos = relationship("CupomUsado", back_populates="cupom")
 

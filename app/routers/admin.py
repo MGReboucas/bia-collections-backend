@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
@@ -14,9 +14,11 @@ from app.dependencies import (
     log_admin_access_denied,
 )
 from app.services.upload_service import upload_image
+from app.models.avaliacao import Avaliacao
+from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomUsado
 from app.models.duvida import Duvida
-from app.models.pedido import Pedido
+from app.models.pedido import Pedido, ItemPedido
 from app.models.produto import Categoria, Produto
 from app.models.usuario import Usuario
 from app.schemas.duvida import DuvidaOut
@@ -59,6 +61,7 @@ class CupomPayload(BaseModel):
     validade: date
     valor_minimo_pedido: float = 0
     ativo: bool = True
+    max_usos: Optional[int] = None
 
     @field_validator("codigo")
     @classmethod
@@ -74,6 +77,33 @@ class CupomPayload(BaseModel):
         if value not in {"porcentagem", "valor", "frete"}:
             raise ValueError("Tipo de cupom inválido.")
         return value
+
+
+class RastreioPayload(BaseModel):
+    codigo_rastreio: str
+
+    @field_validator("codigo_rastreio")
+    @classmethod
+    def rastreio_valido(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Código de rastreio não pode ser vazio.")
+        return value
+
+
+class AvaliacaoStatusPayload(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def status_valido(cls, value: str) -> str:
+        if value not in {"aprovada", "reprovada"}:
+            raise ValueError("Status de avaliação inválido.")
+        return value
+
+
+class BannerOrdemPayload(BaseModel):
+    ids: List[int]
 
 
 class StatusPedidoPayload(BaseModel):
@@ -142,6 +172,8 @@ def _produto_response(produto: Produto) -> dict:
         "descricao": produto.descricao,
         "preco": produto.preco,
         "preco_formatado": formatar_preco(produto.preco),
+        "preco_promocional": produto.preco_promocional,
+        "estoque": produto.estoque,
         "categoria": produto.categoria.nome if produto.categoria else None,
         "imagem_url": produto.imagem_url,
         "tamanhos": json.loads(produto.tamanhos) if produto.tamanhos else [],
@@ -184,6 +216,46 @@ def stats(
     }
 
 
+@router.get("/grafico")
+def grafico_receita(
+    dias: int = Query(7, ge=1, le=365),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    hoje = datetime.now(timezone.utc).date()
+    inicio = hoje - timedelta(days=dias - 1)
+    inicio_dt = datetime.combine(inicio, datetime.min.time()).replace(tzinfo=timezone.utc)
+
+    pedidos = (
+        db.query(Pedido)
+        .filter(
+            Pedido.status != "Cancelado",
+            Pedido.criado_em >= inicio_dt,
+        )
+        .all()
+    )
+
+    dados: dict = {}
+    for i in range(dias):
+        dia = inicio + timedelta(days=i)
+        dados[dia] = {"receita": 0.0, "pedidos": 0}
+
+    for pedido in pedidos:
+        dia = pedido.criado_em.astimezone(timezone.utc).date()
+        if dia in dados:
+            dados[dia]["receita"] += pedido.total
+            dados[dia]["pedidos"] += 1
+
+    return [
+        {
+            "data": dia.strftime("%d/%m"),
+            "receita": round(dados[dia]["receita"], 2),
+            "pedidos": dados[dia]["pedidos"],
+        }
+        for dia in sorted(dados.keys())
+    ]
+
+
 @router.get("/pedidos", response_model=List[PedidoListItem])
 def listar_pedidos_admin(
     status: Optional[str] = Query(None),
@@ -223,6 +295,76 @@ def atualizar_status_pedido(
     pedido.status = data.status
     db.commit()
     return {"numero": pedido.numero, "status": pedido.status}
+
+
+@router.get("/pedidos/{numero}")
+def detalhe_pedido_admin(
+    numero: str,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    pedido = (
+        db.query(Pedido)
+        .options(joinedload(Pedido.itens), joinedload(Pedido.usuario))
+        .filter(Pedido.numero == numero)
+        .first()
+    )
+    if not pedido:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado.")
+
+    endereco = None
+    if pedido.endereco_cep:
+        endereco = {
+            "cep": pedido.endereco_cep,
+            "rua": pedido.endereco_rua,
+            "numero": pedido.endereco_numero,
+            "complemento": pedido.endereco_complemento,
+            "bairro": pedido.endereco_bairro,
+            "cidade": pedido.endereco_cidade,
+            "estado": pedido.endereco_estado,
+        }
+
+    return {
+        "numero": pedido.numero,
+        "data": pedido.criado_em.isoformat() if pedido.criado_em else "",
+        "status": pedido.status,
+        "forma_pagamento": pedido.forma_pagamento,
+        "total": pedido.total,
+        "total_formatado": formatar_preco(pedido.total),
+        "desconto_aplicado": pedido.desconto_aplicado,
+        "cupom_codigo": pedido.cupom_codigo,
+        "codigo_rastreio": pedido.codigo_rastreio,
+        "usuario_nome": pedido.usuario.nome_completo if pedido.usuario else None,
+        "usuario_email": pedido.usuario.email if pedido.usuario else None,
+        "itens": [
+            {
+                "produto_id": item.produto_id,
+                "nome_produto": item.nome_produto,
+                "preco_unitario": item.preco_unitario,
+                "tamanho": item.tamanho,
+                "cor": item.cor,
+                "quantidade": item.quantidade,
+            }
+            for item in pedido.itens
+        ],
+        "endereco": endereco,
+    }
+
+
+@router.put("/pedidos/{numero}/rastreio")
+def atualizar_rastreio_pedido(
+    numero: str,
+    data: RastreioPayload,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    pedido = db.query(Pedido).filter(Pedido.numero == numero).first()
+    if not pedido:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado.")
+
+    pedido.codigo_rastreio = data.codigo_rastreio
+    db.commit()
+    return {"numero": pedido.numero, "codigo_rastreio": pedido.codigo_rastreio}
 
 
 @router.get("/usuarios")
@@ -364,6 +506,8 @@ async def criar_produto(
     nome: str = Form(...),
     descricao: str = Form(""),
     preco: float = Form(...),
+    preco_promocional: Optional[float] = Form(None),
+    estoque: Optional[int] = Form(None),
     categoria_id: str = Form(""),
     tamanhos: str = Form(""),
     cores: str = Form(""),
@@ -377,6 +521,8 @@ async def criar_produto(
         nome=nome.strip(),
         descricao=descricao.strip() or None,
         preco=preco,
+        preco_promocional=preco_promocional,
+        estoque=estoque,
         categoria_id=int(categoria_id) if categoria_id else None,
         imagem_url=img,
         tamanhos=_split_csv(tamanhos),
@@ -395,6 +541,8 @@ async def atualizar_produto(
     nome: str = Form(...),
     descricao: str = Form(""),
     preco: float = Form(...),
+    preco_promocional: Optional[float] = Form(None),
+    estoque: Optional[int] = Form(None),
     categoria_id: str = Form(""),
     tamanhos: str = Form(""),
     cores: str = Form(""),
@@ -411,6 +559,8 @@ async def atualizar_produto(
     produto.nome = nome.strip()
     produto.descricao = descricao.strip() or None
     produto.preco = preco
+    produto.preco_promocional = preco_promocional
+    produto.estoque = estoque
     produto.categoria_id = int(categoria_id) if categoria_id else None
     produto.tamanhos = _split_csv(tamanhos)
     produto.cores = _split_csv(cores)
@@ -454,9 +604,26 @@ def listar_cupons_admin(
             "validade": cupom.validade.isoformat(),
             "ativo": cupom.ativo,
             "valor_minimo_pedido": cupom.valor_minimo_pedido,
+            "max_usos": cupom.max_usos,
+            "total_usos": cupom.total_usos,
         }
         for cupom in cupons
     ]
+
+
+def _cupom_response(cupom: Cupom) -> dict:
+    return {
+        "id": cupom.id,
+        "codigo": cupom.codigo,
+        "descricao": cupom.descricao,
+        "tipo": cupom.tipo,
+        "valor": cupom.valor,
+        "validade": cupom.validade.isoformat(),
+        "ativo": cupom.ativo,
+        "valor_minimo_pedido": cupom.valor_minimo_pedido,
+        "max_usos": cupom.max_usos,
+        "total_usos": cupom.total_usos,
+    }
 
 
 @router.post("/cupons", status_code=status.HTTP_201_CREATED)
@@ -469,20 +636,52 @@ def criar_cupom_admin(
     if exists:
         raise HTTPException(status_code=409, detail="Cupom já cadastrado.")
 
-    cupom = Cupom(**data.model_dump())
+    cupom = Cupom(
+        codigo=data.codigo,
+        descricao=data.descricao,
+        tipo=data.tipo,
+        valor=data.valor,
+        validade=data.validade,
+        ativo=data.ativo,
+        valor_minimo_pedido=data.valor_minimo_pedido,
+        max_usos=data.max_usos,
+        total_usos=0,
+    )
     db.add(cupom)
     db.commit()
     db.refresh(cupom)
-    return {
-        "id": cupom.id,
-        "codigo": cupom.codigo,
-        "descricao": cupom.descricao,
-        "tipo": cupom.tipo,
-        "valor": cupom.valor,
-        "validade": cupom.validade.isoformat(),
-        "ativo": cupom.ativo,
-        "valor_minimo_pedido": cupom.valor_minimo_pedido,
-    }
+    return _cupom_response(cupom)
+
+
+@router.put("/cupons/{cupom_id}")
+def atualizar_cupom_admin(
+    cupom_id: int,
+    data: CupomPayload,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    cupom = db.query(Cupom).filter(Cupom.id == cupom_id).first()
+    if not cupom:
+        raise HTTPException(status_code=404, detail="Cupom não encontrado.")
+
+    # Não permitir alterar código se já tiver usos registrados
+    if cupom.codigo != data.codigo and cupom.total_usos > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Não é possível alterar o código de um cupom que já foi utilizado.",
+        )
+
+    cupom.codigo = data.codigo
+    cupom.descricao = data.descricao
+    cupom.tipo = data.tipo
+    cupom.valor = data.valor
+    cupom.validade = data.validade
+    cupom.ativo = data.ativo
+    cupom.valor_minimo_pedido = data.valor_minimo_pedido
+    cupom.max_usos = data.max_usos
+    db.commit()
+    db.refresh(cupom)
+    return _cupom_response(cupom)
 
 
 @router.delete("/cupons/{cupom_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -532,3 +731,172 @@ def responder_duvida_admin(
     db.commit()
     db.refresh(duvida)
     return duvida
+
+
+# ── Avaliações ────────────────────────────────────────────────────────────────
+
+@router.get("/avaliacoes")
+def listar_avaliacoes_admin(
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    query = (
+        db.query(Avaliacao)
+        .options(joinedload(Avaliacao.produto), joinedload(Avaliacao.usuario))
+        .order_by(Avaliacao.criado_em.desc())
+    )
+    if status in ("pendente", "aprovada", "reprovada"):
+        query = query.filter(Avaliacao.status == status)
+
+    return [
+        {
+            "id": a.id,
+            "produto_id": a.produto_id,
+            "produto_nome": a.produto.nome if a.produto else None,
+            "usuario_nome": a.usuario.nome_completo or a.usuario.username if a.usuario else None,
+            "nota": a.nota,
+            "comentario": a.comentario,
+            "status": a.status,
+            "criado_em": a.criado_em.isoformat() if a.criado_em else "",
+        }
+        for a in query.all()
+    ]
+
+
+@router.put("/avaliacoes/{avaliacao_id}/status")
+def atualizar_status_avaliacao(
+    avaliacao_id: int,
+    data: AvaliacaoStatusPayload,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    avaliacao = db.query(Avaliacao).filter(Avaliacao.id == avaliacao_id).first()
+    if not avaliacao:
+        raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
+
+    avaliacao.status = data.status
+    db.commit()
+    return {"id": avaliacao.id, "status": avaliacao.status}
+
+
+@router.delete("/avaliacoes/{avaliacao_id}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_avaliacao(
+    avaliacao_id: int,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    avaliacao = db.query(Avaliacao).filter(Avaliacao.id == avaliacao_id).first()
+    if not avaliacao:
+        raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
+
+    db.delete(avaliacao)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Banners ───────────────────────────────────────────────────────────────────
+
+async def _save_banner_image(file: UploadFile | None) -> str | None:
+    if not file or not file.filename:
+        return None
+    return await upload_image(file, folder="bia-collections/banners")
+
+
+def _banner_response(banner: Banner) -> dict:
+    return {
+        "id": banner.id,
+        "titulo": banner.titulo,
+        "imagem_url": banner.imagem_url,
+        "link": banner.link,
+        "ativo": banner.ativo,
+        "ordem": banner.ordem,
+    }
+
+
+@router.get("/banners")
+def listar_banners_admin(
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    banners = db.query(Banner).order_by(Banner.ordem).all()
+    return [_banner_response(b) for b in banners]
+
+
+@router.post("/banners", status_code=status.HTTP_201_CREATED)
+async def criar_banner(
+    titulo: str = Form(...),
+    link: Optional[str] = Form(None),
+    imagem: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    img = await _save_banner_image(imagem)
+    max_ordem = db.query(func.coalesce(func.max(Banner.ordem), 0)).scalar() or 0
+    banner = Banner(
+        titulo=titulo.strip(),
+        imagem_url=img,
+        link=link.strip() if link else None,
+        ativo=True,
+        ordem=max_ordem + 1,
+    )
+    db.add(banner)
+    db.commit()
+    db.refresh(banner)
+    return _banner_response(banner)
+
+
+@router.put("/banners/ordem")
+def reordenar_banners(
+    data: BannerOrdemPayload,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    for posicao, banner_id in enumerate(data.ids):
+        db.query(Banner).filter(Banner.id == banner_id).update(
+            {Banner.ordem: posicao}, synchronize_session=False
+        )
+    db.commit()
+    return {"ok": True}
+
+
+@router.put("/banners/{banner_id}")
+async def atualizar_banner(
+    banner_id: int,
+    titulo: str = Form(...),
+    link: Optional[str] = Form(None),
+    ativo: bool = Form(True),
+    imagem: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    banner = db.query(Banner).filter(Banner.id == banner_id).first()
+    if not banner:
+        raise HTTPException(status_code=404, detail="Banner não encontrado.")
+
+    img = await _save_banner_image(imagem)
+    banner.titulo = titulo.strip()
+    banner.link = link.strip() if link else None
+    banner.ativo = ativo
+    if img:
+        banner.imagem_url = img
+
+    db.commit()
+    db.refresh(banner)
+    return _banner_response(banner)
+
+
+@router.delete("/banners/{banner_id}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_banner(
+    banner_id: int,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    banner = db.query(Banner).filter(Banner.id == banner_id).first()
+    if not banner:
+        raise HTTPException(status_code=404, detail="Banner não encontrado.")
+
+    db.delete(banner)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+

@@ -114,6 +114,9 @@ def validar_cupom(
             mensagem=f"Pedido mínimo de {formatar_preco(cupom.valor_minimo_pedido)} para este cupom.",
         )
 
+    if cupom.max_usos is not None and cupom.total_usos >= cupom.max_usos:
+        return ValidarCupomResponse(valido=False, mensagem="Cupom esgotado.")
+
     ja_usado = db.query(CupomUsado).filter(
         CupomUsado.cupom_id == cupom.id,
         CupomUsado.usuario_id == current_user.id,

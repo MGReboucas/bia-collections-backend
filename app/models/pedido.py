@@ -24,6 +24,7 @@ class Pedido(Base):
     endereco_estado = Column(String(2))
     cupom_codigo = Column(String(50), nullable=True)
     desconto_aplicado = Column(Float, default=0.0)
+    codigo_rastreio = Column(String(100), nullable=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
 
     usuario = relationship("Usuario", back_populates="pedidos")
