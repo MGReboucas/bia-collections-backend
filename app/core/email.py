@@ -53,6 +53,12 @@ def _provider() -> str:
 def _raise_for_http_response(provider: str, response: httpx.Response) -> None:
     if 200 <= response.status_code < 300:
         return
+    detail = _clean(response.text)
+    if detail:
+        detail = detail[:500]
+        raise RuntimeError(
+            f"Falha ao enviar email via {provider}: HTTP {response.status_code}. Resposta: {detail}"
+        )
     raise RuntimeError(f"Falha ao enviar email via {provider}: HTTP {response.status_code}.")
 
 

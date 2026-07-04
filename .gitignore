@@ -19,6 +19,7 @@ ENV/
 # Environment variables (NEVER commit secrets)
 .env
 .env.*
+render-email-*.env
 !.env.example
 
 # Database files
