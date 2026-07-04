@@ -13,6 +13,20 @@ services:
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_DAYS
         value: "7"
+      - key: EMAIL_PROVIDER
+        value: auto
+      - key: EMAIL_FROM_NAME
+        value: Bia Collections
+      - key: EMAIL_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_API_URL
+        value: https://api.resend.com/emails
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_API_URL
+        value: https://api.brevo.com/v3/smtp/email
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT
@@ -22,8 +36,6 @@ services:
       - key: SMTP_PASSWORD
         sync: false
       - key: SMTP_FROM
-        sync: false
-      - key: EMAIL_FROM
         sync: false
       - key: MP_ACCESS_TOKEN
         sync: false

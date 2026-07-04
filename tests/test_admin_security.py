@@ -25,6 +25,7 @@ from main import app
 
 PASSWORD = "senha-segura-123"
 auth_router_module = importlib.import_module("app.routers.auth")
+email_module = importlib.import_module("app.core.email")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -434,6 +435,89 @@ def test_solicitar_redefinicao_email_inexistente_nao_chama_smtp(client, monkeypa
         assert db.query(ResetSenha).count() == 0
     finally:
         db.close()
+
+
+def test_envio_por_resend_usa_api_http_quando_api_key_configurada(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(email_module.settings, "EMAIL_PROVIDER", "auto")
+    monkeypatch.setattr(email_module.settings, "RESEND_API_KEY", "resend-key")
+    monkeypatch.setattr(email_module.settings, "RESEND_API_URL", "https://api.resend.test/emails")
+    monkeypatch.setattr(email_module.settings, "BREVO_API_KEY", "")
+    monkeypatch.setattr(email_module.settings, "SMTP_FROM", "")
+    monkeypatch.setattr(email_module.settings, "SMTP_USER", "")
+    monkeypatch.setattr(email_module.settings, "EMAIL_FROM", "sender@example.com")
+    monkeypatch.setattr(email_module.settings, "EMAIL_FROM_NAME", "Bia Collections")
+    monkeypatch.setattr(email_module.httpx, "Client", FakeClient)
+
+    email_module.enviar_email_codigo_acesso("cliente@example.com", "123456")
+
+    assert captured["url"] == "https://api.resend.test/emails"
+    assert captured["headers"] == {"Authorization": "Bearer resend-key"}
+    assert captured["json"]["from"] == "Bia Collections <sender@example.com>"
+    assert captured["json"]["to"] == ["cliente@example.com"]
+    assert captured["json"]["subject"] == "Seu codigo de acesso - Bia Collections"
+    assert "123456" in captured["json"]["text"]
+
+
+def test_envio_por_brevo_usa_api_http_quando_configurado(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 201
+
+    class FakeClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(email_module.settings, "EMAIL_PROVIDER", "brevo")
+    monkeypatch.setattr(email_module.settings, "BREVO_API_KEY", "brevo-key")
+    monkeypatch.setattr(email_module.settings, "BREVO_API_URL", "https://api.brevo.test/v3/smtp/email")
+    monkeypatch.setattr(email_module.settings, "SMTP_FROM", "")
+    monkeypatch.setattr(email_module.settings, "SMTP_USER", "")
+    monkeypatch.setattr(email_module.settings, "EMAIL_FROM", "sender@example.com")
+    monkeypatch.setattr(email_module.settings, "EMAIL_FROM_NAME", "Bia Collections")
+    monkeypatch.setattr(email_module.httpx, "Client", FakeClient)
+
+    email_module.enviar_email_codigo_acesso("cliente@example.com", "123456")
+
+    assert captured["url"] == "https://api.brevo.test/v3/smtp/email"
+    assert captured["headers"] == {"api-key": "brevo-key"}
+    assert captured["json"]["sender"] == {"name": "Bia Collections", "email": "sender@example.com"}
+    assert captured["json"]["to"] == [{"email": "cliente@example.com"}]
+    assert captured["json"]["subject"] == "Seu codigo de acesso - Bia Collections"
+    assert "123456" in captured["json"]["textContent"]
 
 
 def test_master_admin_nao_consegue_excluir_a_si_mesmo(client):

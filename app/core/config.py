@@ -16,13 +16,23 @@ class Settings(BaseSettings):
     # Ex: ALLOWED_ORIGINS=http://localhost:3000,https://meusite.com
     ALLOWED_ORIGINS: List[str] = ["*"]
 
-    # SMTP — configure in .env
+    # Email — configure in .env / Render
+    EMAIL_PROVIDER: str = "auto"  # auto, resend, brevo, smtp
+    EMAIL_FROM_NAME: str = "Bia Collections"
+    EMAIL_FROM: str = ""
+
+    # HTTP email APIs
+    RESEND_API_KEY: str = ""
+    RESEND_API_URL: str = "https://api.resend.com/emails"
+    BREVO_API_KEY: str = ""
+    BREVO_API_URL: str = "https://api.brevo.com/v3/smtp/email"
+
+    # SMTP fallback
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = ""
-    EMAIL_FROM: str = ""
 
     TWO_FACTOR_CODE_EXPIRE_SECONDS: int = 600
     TWO_FACTOR_MAX_ATTEMPTS: int = 5
@@ -62,7 +72,7 @@ class Settings(BaseSettings):
 
     @property
     def email_from_address(self) -> str:
-        return self.SMTP_FROM or self.EMAIL_FROM or self.SMTP_USER or "no-reply@bia-collections.com"
+        return self.SMTP_FROM or self.EMAIL_FROM or self.SMTP_USER
 
     model_config = {"env_file": ".env"}
 
