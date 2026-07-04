@@ -90,6 +90,7 @@ class UsuarioBasico(BaseModel):
     email: str
     nome_completo: Optional[str] = None
     is_admin: bool = False
+    foto_url: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -98,3 +99,51 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     usuario: UsuarioBasico
+
+
+class TwoFactorChallengeResponse(BaseModel):
+    requires_2fa: bool = True
+    two_factor_token: str
+    email: str
+    expires_in: int
+    message: str
+
+
+class VerifyTwoFactorRequest(BaseModel):
+    two_factor_token: str
+    codigo: str
+
+    @field_validator("two_factor_token")
+    @classmethod
+    def token_valido(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 255:
+            raise ValueError("Token de desafio invalido.")
+        return v
+
+    @field_validator("codigo")
+    @classmethod
+    def codigo_valido(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) != 6 or not v.isdigit():
+            raise ValueError("Codigo invalido.")
+        return v
+
+
+class ResendTwoFactorRequest(BaseModel):
+    two_factor_token: str
+
+    @field_validator("two_factor_token")
+    @classmethod
+    def token_valido(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 255:
+            raise ValueError("Token de desafio invalido.")
+        return v
+
+
+class ResendTwoFactorResponse(BaseModel):
+    two_factor_token: str
+    email: str
+    expires_in: int
+    message: str

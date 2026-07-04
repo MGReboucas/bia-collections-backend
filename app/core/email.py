@@ -6,18 +6,37 @@ from email.mime.text import MIMEText
 from app.core.config import settings
 
 
-def enviar_email_reset(destinatario: str, codigo: str) -> None:
-    """Envia o codigo de redefinicao de senha por email."""
+def _sender() -> str:
+    return settings.email_from_address.strip()
+
+
+def _smtp_config() -> tuple[str, str, str]:
     smtp_user = settings.SMTP_USER.strip()
     smtp_password = settings.SMTP_PASSWORD.strip()
-    remetente = (settings.EMAIL_FROM or smtp_user).strip()
+    sender = _sender()
 
-    if not settings.SMTP_HOST or not settings.SMTP_PORT or not smtp_user or not smtp_password or not remetente:
+    if not settings.SMTP_HOST or not settings.SMTP_PORT or not smtp_user or not smtp_password or not sender:
         raise RuntimeError("Configuracao SMTP incompleta.")
 
+    return smtp_user, smtp_password, sender
+
+
+def _send_message(destinatario: str, msg: MIMEMultipart) -> None:
+    smtp_user, smtp_password, sender = _smtp_config()
+    context = ssl.create_default_context()
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
+        server.ehlo()
+        server.starttls(context=context)
+        server.ehlo()
+        server.login(smtp_user, smtp_password)
+        server.sendmail(sender, [destinatario], msg.as_string())
+
+
+def enviar_email_reset(destinatario: str, codigo: str) -> None:
+    """Envia o codigo de redefinicao de senha por email."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Redefinição de senha — Bia Collections"
-    msg["From"] = f"Bia Collections <{remetente}>"
+    msg["From"] = f"Bia Collections <{_sender()}>"
     msg["To"] = destinatario
 
     html = f"""
@@ -44,10 +63,19 @@ def enviar_email_reset(destinatario: str, codigo: str) -> None:
     """
     msg.attach(MIMEText(html, "html"))
 
-    context = ssl.create_default_context()
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
-        server.ehlo()
-        server.starttls(context=context)
-        server.ehlo()
-        server.login(smtp_user, smtp_password)
-        server.sendmail(remetente, [destinatario], msg.as_string())
+    _send_message(destinatario, msg)
+
+
+def enviar_email_codigo_acesso(destinatario: str, codigo: str) -> None:
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Seu codigo de acesso - Bia Collections"
+    msg["From"] = f"Bia Collections <{_sender()}>"
+    msg["To"] = destinatario
+
+    corpo = (
+        f"Seu codigo de acesso e: {codigo}\n\n"
+        "Ele expira em 10 minutos. Se voce nao tentou entrar, ignore este e-mail."
+    )
+    msg.attach(MIMEText(corpo, "plain", "utf-8"))
+
+    _send_message(destinatario, msg)
