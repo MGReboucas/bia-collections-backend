@@ -1,9 +1,11 @@
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -25,6 +27,26 @@ from app.schemas.auth import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
+logger = logging.getLogger(__name__)
+
+
+def _normalizar_email(email: str | None) -> str:
+    return (email or "").strip().lower()
+
+
+def _email_mascarado(email: str) -> str:
+    local, sep, dominio = email.partition("@")
+    if not sep:
+        return "***"
+    return f"{local[:2]}***@{dominio}"
+
+
+def _usuario_por_email(db: Session, email: str) -> Usuario | None:
+    return (
+        db.query(Usuario)
+        .filter(func.lower(func.trim(Usuario.email)) == email)
+        .first()
+    )
 
 
 def _usuario_basico_response(user: Usuario) -> UsuarioBasico:
@@ -98,14 +120,16 @@ def recuperar_senha(request: Request, data: RecuperarSenhaRequest, db: Session =
 @limiter.limit("3/minute")
 def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, db: Session = Depends(get_db)):
     """Etapa 1 — gera código de 6 dígitos, armazena hash e envia por e-mail."""
-    user = db.query(Usuario).filter(Usuario.email == data.email).first()
+    email = _normalizar_email(data.email)
+    user = _usuario_por_email(db, email)
     # Resposta genérica para não revelar se o e-mail existe
     if not user:
+        logger.info("Reset de senha solicitado para email nao cadastrado: %s", _email_mascarado(email))
         return {"mensagem": "Se o e-mail existir, você receberá o código."}
 
     # Invalida códigos anteriores do mesmo e-mail
     db.query(ResetSenha).filter(
-        ResetSenha.email == data.email,
+        ResetSenha.email == email,
         ResetSenha.usado == False,  # noqa: E712
     ).update({"usado": True})
 
@@ -113,7 +137,7 @@ def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, d
     expira_em = datetime.now(timezone.utc) + timedelta(minutes=15)
 
     reset = ResetSenha(
-        email=data.email,
+        email=email,
         codigo_hash=get_password_hash(codigo),
         expira_em=expira_em,
     )
@@ -121,25 +145,28 @@ def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, d
     db.commit()
 
     try:
-        enviar_email_reset(data.email, codigo)
+        enviar_email_reset(email, codigo)
     except Exception:
+        logger.exception("Falha ao enviar email de reset para %s", _email_mascarado(email))
         # Não expõe o erro de SMTP ao cliente
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Não foi possível enviar o e-mail. Tente novamente.",
         )
 
+    logger.info("Email de reset enviado para %s", _email_mascarado(email))
     return {"mensagem": "Se o e-mail existir, você receberá o código."}
 
 
 @router.post("/verificar-codigo")
 def verificar_codigo(data: VerificarCodigoRequest, db: Session = Depends(get_db)):
     """Etapa 2 — verifica se o código é válido sem consumi-lo."""
+    email = _normalizar_email(data.email)
     agora = datetime.now(timezone.utc)
     registros = (
         db.query(ResetSenha)
         .filter(
-            ResetSenha.email == data.email,
+            ResetSenha.email == email,
             ResetSenha.usado == False,  # noqa: E712
             ResetSenha.expira_em > agora,
         )
@@ -165,11 +192,12 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
             detail="As senhas não coincidem.",
         )
 
+    email = _normalizar_email(data.email)
     agora = datetime.now(timezone.utc)
     registros = (
         db.query(ResetSenha)
         .filter(
-            ResetSenha.email == data.email,
+            ResetSenha.email == email,
             ResetSenha.usado == False,  # noqa: E712
             ResetSenha.expira_em > agora,
         )
@@ -188,7 +216,7 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
             detail="Código inválido ou expirado.",
         )
 
-    user = db.query(Usuario).filter(Usuario.email == data.email).first()
+    user = _usuario_por_email(db, email)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
 

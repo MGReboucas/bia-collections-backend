@@ -1,3 +1,4 @@
+import importlib
 import os
 from pathlib import Path
 
@@ -12,13 +13,15 @@ os.environ["MASTER_ADMIN_EMAIL"] = "reboucas444@gmail.com"
 from fastapi.testclient import TestClient
 import pytest
 
-from app.core.security import create_access_token, get_password_hash
+from app.core.security import create_access_token, get_password_hash, verify_password
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
+from app.models.reset_senha import ResetSenha
 from app.models.usuario import Usuario
 from main import app
 
 PASSWORD = "senha-segura-123"
+auth_router_module = importlib.import_module("app.routers.auth")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -107,6 +110,57 @@ def test_master_admin_recebe_200_e_is_admin_no_login_e_perfil(client):
 
     usuarios = client.get("/api/v1/admin/usuarios", headers=headers)
     assert usuarios.status_code == 200
+
+
+def test_solicitar_redefinicao_normaliza_email_e_envia_codigo(client, monkeypatch):
+    create_user("cliente-reset", "cliente@example.com")
+    enviados = []
+
+    def fake_enviar_email(destinatario: str, codigo: str) -> None:
+        enviados.append({"destinatario": destinatario, "codigo": codigo})
+
+    monkeypatch.setattr(auth_router_module, "enviar_email_reset", fake_enviar_email)
+
+    response = client.post(
+        "/api/v1/auth/solicitar-redefinicao",
+        json={"email": " Cliente@Example.com "},
+    )
+
+    assert response.status_code == 200
+    assert len(enviados) == 1
+    assert enviados[0]["destinatario"] == "cliente@example.com"
+    assert enviados[0]["codigo"].isdigit()
+    assert len(enviados[0]["codigo"]) == 6
+
+    db = SessionLocal()
+    try:
+        reset = (
+            db.query(ResetSenha)
+            .filter(ResetSenha.email == "cliente@example.com", ResetSenha.usado.is_(False))
+            .one()
+        )
+        assert verify_password(enviados[0]["codigo"], reset.codigo_hash)
+    finally:
+        db.close()
+
+
+def test_solicitar_redefinicao_email_inexistente_nao_chama_smtp(client, monkeypatch):
+    def fake_enviar_email(destinatario: str, codigo: str) -> None:
+        raise AssertionError("SMTP nao deve ser chamado para email inexistente")
+
+    monkeypatch.setattr(auth_router_module, "enviar_email_reset", fake_enviar_email)
+
+    response = client.post(
+        "/api/v1/auth/solicitar-redefinicao",
+        json={"email": "ninguem@example.com"},
+    )
+
+    assert response.status_code == 200
+    db = SessionLocal()
+    try:
+        assert db.query(ResetSenha).count() == 0
+    finally:
+        db.close()
 
 
 def test_master_admin_nao_consegue_excluir_a_si_mesmo(client):
