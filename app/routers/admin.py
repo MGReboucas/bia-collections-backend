@@ -13,13 +13,19 @@ from app.dependencies import (
     is_master_admin_email,
     log_admin_access_denied,
 )
-from app.services.upload_service import upload_image
+from app.services.upload_service import (
+    ALLOWED_TYPES,
+    EXT_TO_MIME,
+    MAX_SIZE,
+    delete_old_image,
+    upload_image,
+)
 from app.models.avaliacao import Avaliacao
 from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomUsado
 from app.models.duvida import Duvida
 from app.models.pedido import Pedido, ItemPedido
-from app.models.produto import Categoria, Produto
+from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.usuario import Usuario
 from app.schemas.duvida import DuvidaOut
 from app.schemas.pedido import PedidoListItem
@@ -39,6 +45,8 @@ ORDER_STATUSES = {
     "Entregue",
     "Cancelado",
 }
+MAX_PRODUCT_IMAGES = 8
+PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
 
 
 class CategoriaPayload(BaseModel):
@@ -145,10 +153,107 @@ def _split_csv(value: Optional[str]) -> str:
     return json.dumps(items, ensure_ascii=False)
 
 
-async def _save_product_image(file: UploadFile | None) -> str | None:
-    if not file or not file.filename:
-        return None
-    return await upload_image(file, folder="bia-collections/produtos")
+def _uploaded_files(files: List[UploadFile] | None) -> List[UploadFile]:
+    return [file for file in files or [] if file and file.filename]
+
+
+def _infer_upload_content_type(file: UploadFile) -> str:
+    content_type = file.content_type or ""
+    if not content_type or content_type == "application/octet-stream":
+        ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+        content_type = EXT_TO_MIME.get(ext, content_type)
+    return content_type
+
+
+async def _validate_product_images(files: List[UploadFile]) -> None:
+    if len(files) > MAX_PRODUCT_IMAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Envie no maximo {MAX_PRODUCT_IMAGES} imagens por produto.",
+        )
+
+    for index, file in enumerate(files, start=1):
+        content_type = _infer_upload_content_type(file)
+        if content_type not in ALLOWED_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Imagem {index}: formato invalido. Use JPEG, PNG ou WebP.",
+            )
+
+        contents = await file.read()
+        if len(contents) > MAX_SIZE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Imagem {index}: tamanho maximo permitido e 5 MB.",
+            )
+        await file.seek(0)
+
+
+async def _save_product_images(files: List[UploadFile]) -> List[str]:
+    if not files:
+        return []
+
+    await _validate_product_images(files)
+    urls = []
+    for file in files:
+        try:
+            urls.append(await upload_image(file, folder=PRODUCT_IMAGE_FOLDER))
+        except HTTPException as exc:
+            if exc.status_code in {413, 415}:
+                raise HTTPException(status_code=422, detail=exc.detail) from exc
+            raise
+    return urls
+
+
+def _build_product_image_models(image_urls: List[str]) -> List[ProdutoImagem]:
+    return [
+        ProdutoImagem(
+            imagem_url=image_url,
+            ordem=index,
+            principal=index == 0,
+        )
+        for index, image_url in enumerate(image_urls)
+    ]
+
+
+def _produto_imagens_response(produto: Produto) -> list[dict]:
+    imagens = sorted(
+        produto.imagens or [],
+        key=lambda imagem: (
+            not bool(imagem.principal),
+            imagem.ordem if imagem.ordem is not None else 0,
+            imagem.id or 0,
+        ),
+    )
+    return [
+        {
+            "id": imagem.id,
+            "imagem_url": imagem.imagem_url,
+            "ordem": imagem.ordem,
+            "principal": imagem.principal,
+        }
+        for imagem in imagens
+    ]
+
+
+def _produto_imagem_url(produto: Produto, imagens: list[dict]) -> str | None:
+    if produto.imagem_url:
+        return produto.imagem_url
+    if imagens:
+        return imagens[0]["imagem_url"]
+    return None
+
+
+def _product_image_urls(produto: Produto) -> set[str]:
+    urls = {imagem.imagem_url for imagem in produto.imagens or [] if imagem.imagem_url}
+    if produto.imagem_url:
+        urls.add(produto.imagem_url)
+    return urls
+
+
+def _delete_replaced_product_images(old_urls: set[str], new_urls: List[str]) -> None:
+    for url in old_urls - set(new_urls):
+        delete_old_image(url)
 
 
 async def _save_category_image(file: UploadFile | None) -> str | None:
@@ -166,6 +271,7 @@ def _categoria_response(categoria: Categoria) -> dict:
 
 
 def _produto_response(produto: Produto) -> dict:
+    imagens = _produto_imagens_response(produto)
     return {
         "id": produto.id,
         "nome": produto.nome,
@@ -175,7 +281,8 @@ def _produto_response(produto: Produto) -> dict:
         "preco_promocional": produto.preco_promocional,
         "estoque": produto.estoque,
         "categoria": produto.categoria.nome if produto.categoria else None,
-        "imagem_url": produto.imagem_url,
+        "imagem_url": _produto_imagem_url(produto, imagens),
+        "imagens": imagens,
         "tamanhos": json.loads(produto.tamanhos) if produto.tamanhos else [],
         "cores": json.loads(produto.cores) if produto.cores else [],
     }
@@ -501,6 +608,43 @@ def deletar_categoria(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/produtos")
+def listar_produtos_admin(
+    busca: Optional[str] = Query(None),
+    categoria_id: Optional[int] = Query(None),
+    ativo: Optional[bool] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    query = db.query(Produto).options(
+        joinedload(Produto.categoria),
+        joinedload(Produto.imagens),
+    )
+
+    if busca:
+        query = query.filter(Produto.nome.ilike(f"%{busca}%"))
+    if categoria_id is not None:
+        query = query.filter(Produto.categoria_id == categoria_id)
+    if ativo is not None:
+        query = query.filter(Produto.ativo.is_(ativo))
+
+    total = query.count()
+    produtos = (
+        query.order_by(Produto.criado_em.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "itens": [_produto_response(produto) for produto in produtos],
+    }
+
+
 @router.post("/produtos", status_code=status.HTTP_201_CREATED)
 async def criar_produto(
     nome: str = Form(...),
@@ -513,10 +657,12 @@ async def criar_produto(
     cores: str = Form(""),
     ativo: bool = Form(True),
     imagem: UploadFile | None = File(None),
+    imagens: List[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    img = await _save_product_image(imagem)
+    image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
+    image_urls = await _save_product_images(image_files)
     produto = Produto(
         nome=nome.strip(),
         descricao=descricao.strip() or None,
@@ -524,7 +670,8 @@ async def criar_produto(
         preco_promocional=preco_promocional,
         estoque=estoque,
         categoria_id=int(categoria_id) if categoria_id else None,
-        imagem_url=img,
+        imagem_url=image_urls[0] if image_urls else None,
+        imagens=_build_product_image_models(image_urls),
         tamanhos=_split_csv(tamanhos),
         cores=_split_csv(cores),
         ativo=ativo,
@@ -548,14 +695,23 @@ async def atualizar_produto(
     cores: str = Form(""),
     ativo: bool = Form(True),
     imagem: UploadFile | None = File(None),
+    imagens: List[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    produto = db.query(Produto).filter(Produto.id == produto_id).first()
+    produto = (
+        db.query(Produto)
+        .options(joinedload(Produto.imagens))
+        .filter(Produto.id == produto_id)
+        .first()
+    )
     if not produto:
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
 
-    img = await _save_product_image(imagem)
+    image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
+    old_image_urls = _product_image_urls(produto) if image_files else set()
+    image_urls = await _save_product_images(image_files) if image_files else []
+
     produto.nome = nome.strip()
     produto.descricao = descricao.strip() or None
     produto.preco = preco
@@ -565,11 +721,14 @@ async def atualizar_produto(
     produto.tamanhos = _split_csv(tamanhos)
     produto.cores = _split_csv(cores)
     produto.ativo = ativo
-    if img:
-        produto.imagem_url = img
+    if image_files:
+        produto.imagens = _build_product_image_models(image_urls)
+        produto.imagem_url = image_urls[0] if image_urls else None
 
     db.commit()
     db.refresh(produto)
+    if image_files:
+        _delete_replaced_product_images(old_image_urls, image_urls)
     return _produto_response(produto)
 
 

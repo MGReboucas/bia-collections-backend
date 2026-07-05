@@ -1,5 +1,14 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
+
+
+class ProdutoImagemOut(BaseModel):
+    id: int
+    imagem_url: str
+    ordem: int
+    principal: bool
+
+    model_config = {"from_attributes": True}
 
 
 class ProdutoListItem(BaseModel):
@@ -11,8 +20,9 @@ class ProdutoListItem(BaseModel):
     estoque: Optional[int] = None
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
-    tamanhos: List[str] = []
-    cores: List[str] = []
+    imagens: List[ProdutoImagemOut] = Field(default_factory=list)
+    tamanhos: List[str] = Field(default_factory=list)
+    cores: List[str] = Field(default_factory=list)
 
 
 class ProdutoDetalhe(BaseModel):
@@ -25,8 +35,9 @@ class ProdutoDetalhe(BaseModel):
     estoque: Optional[int] = None
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
-    tamanhos: List[str] = []
-    cores: List[str] = []
+    imagens: List[ProdutoImagemOut] = Field(default_factory=list)
+    tamanhos: List[str] = Field(default_factory=list)
+    cores: List[str] = Field(default_factory=list)
 
 
 class ProdutoListResponse(BaseModel):

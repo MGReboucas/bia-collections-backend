@@ -13,6 +13,34 @@ from app.services.frete_service import formatar_preco
 router = APIRouter(prefix="/produtos", tags=["produtos"])
 
 
+def _produto_imagens_response(produto: Produto) -> list[dict]:
+    imagens = sorted(
+        produto.imagens or [],
+        key=lambda imagem: (
+            not bool(imagem.principal),
+            imagem.ordem if imagem.ordem is not None else 0,
+            imagem.id or 0,
+        ),
+    )
+    return [
+        {
+            "id": imagem.id,
+            "imagem_url": imagem.imagem_url,
+            "ordem": imagem.ordem,
+            "principal": imagem.principal,
+        }
+        for imagem in imagens
+    ]
+
+
+def _produto_imagem_url(produto: Produto, imagens: list[dict]) -> str | None:
+    if produto.imagem_url:
+        return produto.imagem_url
+    if imagens:
+        return imagens[0]["imagem_url"]
+    return None
+
+
 def _normalize_category(value: str | None) -> str:
     return "".join(
         char
@@ -50,7 +78,7 @@ def listar_produtos(
 
     query = (
         db.query(Produto)
-        .options(joinedload(Produto.categoria))
+        .options(joinedload(Produto.categoria), joinedload(Produto.imagens))
         .filter(Produto.ativo.is_(True))
     )
 
@@ -66,21 +94,24 @@ def listar_produtos(
     total = query.count()
     produtos = query.offset((page - 1) * limit).limit(limit).all()
 
-    itens = [
-        ProdutoListItem(
-            id=p.id,
-            nome=p.nome,
-            preco=p.preco,
-            preco_formatado=formatar_preco(p.preco),
-            preco_promocional=p.preco_promocional,
-            estoque=p.estoque,
-            categoria=p.categoria.nome if p.categoria else None,
-            imagem_url=p.imagem_url,
-            tamanhos=json.loads(p.tamanhos) if p.tamanhos else [],
-            cores=json.loads(p.cores) if p.cores else [],
+    itens = []
+    for p in produtos:
+        imagens = _produto_imagens_response(p)
+        itens.append(
+            ProdutoListItem(
+                id=p.id,
+                nome=p.nome,
+                preco=p.preco,
+                preco_formatado=formatar_preco(p.preco),
+                preco_promocional=p.preco_promocional,
+                estoque=p.estoque,
+                categoria=p.categoria.nome if p.categoria else None,
+                imagem_url=_produto_imagem_url(p, imagens),
+                imagens=imagens,
+                tamanhos=json.loads(p.tamanhos) if p.tamanhos else [],
+                cores=json.loads(p.cores) if p.cores else [],
+            )
         )
-        for p in produtos
-    ]
     return ProdutoListResponse(total=total, page=page, limit=limit, itens=itens)
 
 
@@ -88,12 +119,13 @@ def listar_produtos(
 def detalhe_produto(produto_id: int, db: Session = Depends(get_db)):
     p = (
         db.query(Produto)
-        .options(joinedload(Produto.categoria))
+        .options(joinedload(Produto.categoria), joinedload(Produto.imagens))
         .filter(Produto.id == produto_id, Produto.ativo.is_(True))
         .first()
     )
     if not p:
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
+    imagens = _produto_imagens_response(p)
     return ProdutoDetalhe(
         id=p.id,
         nome=p.nome,
@@ -103,7 +135,8 @@ def detalhe_produto(produto_id: int, db: Session = Depends(get_db)):
         preco_promocional=p.preco_promocional,
         estoque=p.estoque,
         categoria=p.categoria.nome if p.categoria else None,
-        imagem_url=p.imagem_url,
+        imagem_url=_produto_imagem_url(p, imagens),
+        imagens=imagens,
         tamanhos=json.loads(p.tamanhos) if p.tamanhos else [],
         cores=json.loads(p.cores) if p.cores else [],
     )

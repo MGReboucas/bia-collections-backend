@@ -18,7 +18,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.reset_senha import ResetSenha
-from app.models.produto import Categoria, Produto
+from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
 from app.services.two_factor_service import hash_two_factor_token
@@ -609,6 +609,239 @@ def test_master_admin_cria_categoria_com_upload_de_imagem(client, monkeypatch):
             "imagem_url": "https://cdn.example.test/bolsas.webp",
         }
     ]
+
+
+def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+
+    async def fake_upload_image(file, folder):
+        assert folder == "bia-collections/produtos"
+        return f"/uploads/produtos/{file.filename}"
+
+    monkeypatch.setattr(admin_module, "upload_image", fake_upload_image)
+
+    response = client.post(
+        "/api/v1/admin/produtos",
+        data={
+            "nome": "Vestido galeria",
+            "descricao": "Produto com varias imagens",
+            "preco": "129.9",
+            "estoque": "7",
+            "tamanhos": "P,M",
+            "cores": "Preto,Branco",
+            "ativo": "true",
+        },
+        files=[
+            ("imagem", ("legado.webp", b"legacy", "image/webp")),
+            ("imagens", ("capa.webp", b"cover", "image/webp")),
+            ("imagens", ("detalhe.png", b"detail", "image/png")),
+            ("imagens", ("look.jpg", b"look", "image/jpeg")),
+        ],
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["imagem_url"] == "/uploads/produtos/capa.webp"
+    assert [imagem["imagem_url"] for imagem in body["imagens"]] == [
+        "/uploads/produtos/capa.webp",
+        "/uploads/produtos/detalhe.png",
+        "/uploads/produtos/look.jpg",
+    ]
+    assert [imagem["ordem"] for imagem in body["imagens"]] == [0, 1, 2]
+    assert [imagem["principal"] for imagem in body["imagens"]] == [True, False, False]
+
+    produtos_admin = client.get("/api/v1/admin/produtos", headers=auth_headers("master"))
+    assert produtos_admin.status_code == 200
+    assert produtos_admin.json()["itens"][0]["imagens"] == body["imagens"]
+
+    produtos_publicos = client.get("/api/v1/produtos")
+    assert produtos_publicos.status_code == 200
+    item = produtos_publicos.json()["itens"][0]
+    assert item["imagem_url"] == "/uploads/produtos/capa.webp"
+    assert item["imagens"] == body["imagens"]
+
+    detalhe = client.get(f"/api/v1/produtos/{body['id']}")
+    assert detalhe.status_code == 200
+    assert detalhe.json()["imagens"] == body["imagens"]
+
+
+def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        produto = Produto(
+            nome="Bolsa antiga",
+            preco=199.9,
+            imagem_url="/uploads/produtos/antiga-capa.webp",
+            ativo=True,
+            imagens=[
+                ProdutoImagem(
+                    imagem_url="/uploads/produtos/antiga-capa.webp",
+                    ordem=0,
+                    principal=True,
+                ),
+                ProdutoImagem(
+                    imagem_url="/uploads/produtos/antigo-detalhe.webp",
+                    ordem=1,
+                    principal=False,
+                ),
+            ],
+        )
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    async def fake_upload_image(file, folder):
+        assert folder == "bia-collections/produtos"
+        return f"/uploads/produtos/nova-{file.filename}"
+
+    removed = []
+
+    def fake_delete_old_image(url):
+        removed.append(url)
+
+    monkeypatch.setattr(admin_module, "upload_image", fake_upload_image)
+    monkeypatch.setattr(admin_module, "delete_old_image", fake_delete_old_image)
+
+    response = client.put(
+        f"/api/v1/admin/produtos/{produto_id}",
+        data={
+            "nome": "Bolsa nova",
+            "descricao": "Galeria nova",
+            "preco": "219.9",
+            "ativo": "true",
+        },
+        files=[
+            ("imagens", ("capa.webp", b"cover", "image/webp")),
+            ("imagens", ("detalhe.png", b"detail", "image/png")),
+        ],
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["imagem_url"] == "/uploads/produtos/nova-capa.webp"
+    assert [imagem["imagem_url"] for imagem in body["imagens"]] == [
+        "/uploads/produtos/nova-capa.webp",
+        "/uploads/produtos/nova-detalhe.png",
+    ]
+    assert set(removed) == {
+        "/uploads/produtos/antiga-capa.webp",
+        "/uploads/produtos/antigo-detalhe.webp",
+    }
+
+    db = SessionLocal()
+    try:
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.imagem_url == "/uploads/produtos/nova-capa.webp"
+        assert [imagem.imagem_url for imagem in produto.imagens] == [
+            "/uploads/produtos/nova-capa.webp",
+            "/uploads/produtos/nova-detalhe.png",
+        ]
+    finally:
+        db.close()
+
+
+def test_master_admin_atualiza_produto_sem_imagens_mantem_galeria(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        produto = Produto(
+            nome="Produto sem troca",
+            preco=89.9,
+            imagem_url="/uploads/produtos/capa.webp",
+            ativo=True,
+            imagens=[
+                ProdutoImagem(
+                    imagem_url="/uploads/produtos/capa.webp",
+                    ordem=0,
+                    principal=True,
+                )
+            ],
+        )
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    async def fail_upload_image(file, folder):
+        raise AssertionError("Upload nao deve ser chamado sem novas imagens")
+
+    def fail_delete_old_image(url):
+        raise AssertionError("Imagem antiga nao deve ser removida sem substituicao")
+
+    monkeypatch.setattr(admin_module, "upload_image", fail_upload_image)
+    monkeypatch.setattr(admin_module, "delete_old_image", fail_delete_old_image)
+
+    response = client.put(
+        f"/api/v1/admin/produtos/{produto_id}",
+        data={
+            "nome": "Produto renomeado",
+            "descricao": "Sem trocar imagem",
+            "preco": "99.9",
+            "ativo": "true",
+        },
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nome"] == "Produto renomeado"
+    assert body["imagem_url"] == "/uploads/produtos/capa.webp"
+    assert [imagem["imagem_url"] for imagem in body["imagens"]] == [
+        "/uploads/produtos/capa.webp"
+    ]
+
+
+def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+
+    async def fail_upload_image(file, folder):
+        raise AssertionError("Upload nao deve ocorrer quando a validacao falha")
+
+    monkeypatch.setattr(admin_module, "upload_image", fail_upload_image)
+    headers = auth_headers("master")
+    data = {"nome": "Produto invalido", "preco": "10", "ativo": "true"}
+
+    too_many = client.post(
+        "/api/v1/admin/produtos",
+        data=data,
+        files=[
+            ("imagens", (f"imagem-{index}.webp", b"img", "image/webp"))
+            for index in range(9)
+        ],
+        headers=headers,
+    )
+    assert too_many.status_code == 422
+    assert "maximo 8 imagens" in too_many.json()["detail"]
+
+    invalid_type = client.post(
+        "/api/v1/admin/produtos",
+        data=data,
+        files={"imagens": ("arquivo.txt", b"text", "text/plain")},
+        headers=headers,
+    )
+    assert invalid_type.status_code == 422
+    assert "formato invalido" in invalid_type.json()["detail"]
+
+    oversized = client.post(
+        "/api/v1/admin/produtos",
+        data=data,
+        files={
+            "imagens": (
+                "grande.webp",
+                b"x" * (admin_module.MAX_SIZE + 1),
+                "image/webp",
+            )
+        },
+        headers=headers,
+    )
+    assert oversized.status_code == 422
+    assert "5 MB" in oversized.json()["detail"]
 
 
 def test_listar_produtos_filtra_categoria_por_slug_normalizado(client):

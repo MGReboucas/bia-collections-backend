@@ -56,6 +56,46 @@ if "estoque" not in _produtos_cols:
         _conn.execute(text("ALTER TABLE produtos ADD COLUMN estoque INTEGER"))
         _conn.commit()
 
+if "produto_imagens" in set(inspect(engine).get_table_names()):
+    with engine.begin() as _conn:
+        _conn.execute(
+            text(
+                """
+                INSERT INTO produto_imagens (produto_id, imagem_url, ordem, principal)
+                SELECT p.id, p.imagem_url, 0, :principal
+                FROM produtos p
+                WHERE p.imagem_url IS NOT NULL
+                  AND trim(p.imagem_url) != ''
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM produto_imagens pi
+                    WHERE pi.produto_id = p.id
+                  )
+                """
+            ),
+            {"principal": True},
+        )
+        _conn.execute(
+            text(
+                """
+                UPDATE produtos
+                SET imagem_url = (
+                    SELECT pi.imagem_url
+                    FROM produto_imagens pi
+                    WHERE pi.produto_id = produtos.id
+                    ORDER BY pi.principal DESC, pi.ordem ASC, pi.id ASC
+                    LIMIT 1
+                )
+                WHERE (imagem_url IS NULL OR trim(imagem_url) = '')
+                  AND EXISTS (
+                    SELECT 1
+                    FROM produto_imagens pi
+                    WHERE pi.produto_id = produtos.id
+                  )
+                """
+            )
+        )
+
 with engine.begin() as _conn:
     _conn.execute(
         text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),

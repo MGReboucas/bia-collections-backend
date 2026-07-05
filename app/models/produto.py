@@ -34,3 +34,26 @@ class Produto(Base):
     categoria = relationship("Categoria", back_populates="produtos")
     itens_pedido = relationship("ItemPedido", back_populates="produto")
     avaliacoes = relationship("Avaliacao", back_populates="produto")
+    imagens = relationship(
+        "ProdutoImagem",
+        back_populates="produto",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProdutoImagem(Base):
+    __tablename__ = "produto_imagens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    produto_id = Column(
+        Integer,
+        ForeignKey("produtos.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    imagem_url = Column(String(500), nullable=False)
+    ordem = Column(Integer, nullable=False, default=0)
+    principal = Column(Boolean, nullable=False, default=False)
+    criado_em = Column(DateTime(timezone=True), server_default=func.now())
+
+    produto = relationship("Produto", back_populates="imagens")

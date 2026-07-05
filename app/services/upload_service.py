@@ -8,6 +8,7 @@ Se CLOUDINARY_CLOUD_NAME estiver configurado no .env, faz upload para o Cloudina
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from fastapi import HTTPException, UploadFile
 
@@ -100,8 +101,36 @@ def _save_local(contents: bytes, original_filename: str) -> str:
     return f"/uploads/{filename}"
 
 
+def _cloudinary_public_id_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if "res.cloudinary.com" not in parsed.netloc:
+        return None
+    marker = "/image/upload/"
+    if marker not in parsed.path:
+        return None
+
+    parts = unquote(parsed.path.split(marker, 1)[1]).split("/")
+    version_index = next(
+        (
+            index
+            for index, part in enumerate(parts)
+            if part.startswith("v") and part[1:].isdigit()
+        ),
+        None,
+    )
+    if version_index is not None:
+        parts = parts[version_index + 1:]
+    if not parts:
+        return None
+
+    public_id = "/".join(parts)
+    if "." in public_id:
+        public_id = public_id.rsplit(".", 1)[0]
+    return public_id or None
+
+
 def delete_old_image(url: str | None) -> None:
-    """Remove imagem antiga se era local. Cloudinary gerencia suas próprias."""
+    """Remove imagem antiga quando o storage permite."""
     if not url:
         return
     if url.startswith("/uploads/"):
@@ -111,5 +140,16 @@ def delete_old_image(url: str | None) -> None:
                 os.remove(path)
             except OSError:
                 pass
-    # Para Cloudinary poderíamos chamar cloudinary.uploader.destroy(public_id)
-    # mas como a URL é segura e o free tier é generoso, optamos por não deletar.
+        return
+
+    if _cloudinary_configured:
+        public_id = _cloudinary_public_id_from_url(url)
+        if public_id:
+            try:
+                cloudinary.uploader.destroy(
+                    public_id,
+                    resource_type="image",
+                    invalidate=True,
+                )
+            except Exception:
+                pass
