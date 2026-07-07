@@ -30,6 +30,7 @@ from app.models.usuario import Usuario
 from app.schemas.duvida import DuvidaOut
 from app.schemas.pedido import PedidoListItem
 from app.services.frete_service import formatar_preco
+from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(
     prefix="/admin",
@@ -44,6 +45,13 @@ ORDER_STATUSES = {
     "Enviado",
     "Entregue",
     "Cancelado",
+}
+ORDER_STATUS_EMAIL_EVENTS = {
+    "Pago": "payment_approved",
+    "Preparando": "order_preparing",
+    "Enviado": "order_shipped",
+    "Entregue": "order_delivered",
+    "Cancelado": "order_cancelled",
 }
 MAX_PRODUCT_IMAGES = 8
 PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
@@ -399,8 +407,13 @@ def atualizar_status_pedido(
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado.")
 
+    old_status = pedido.status
     pedido.status = data.status
     db.commit()
+    db.refresh(pedido)
+    event_key = ORDER_STATUS_EMAIL_EVENTS.get(data.status)
+    if event_key and old_status != data.status:
+        trigger_order_email_event(db, event_key, pedido)
     return {"numero": pedido.numero, "status": pedido.status}
 
 
@@ -471,6 +484,13 @@ def atualizar_rastreio_pedido(
 
     pedido.codigo_rastreio = data.codigo_rastreio
     db.commit()
+    db.refresh(pedido)
+    trigger_order_email_event(
+        db,
+        "tracking_code_available",
+        pedido,
+        extra={"tracking_code": pedido.codigo_rastreio or ""},
+    )
     return {"numero": pedido.numero, "codigo_rastreio": pedido.codigo_rastreio}
 
 

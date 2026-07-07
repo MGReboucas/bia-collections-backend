@@ -21,6 +21,7 @@ from app.schemas.pedido import (
 )
 from app.services.pedido_service import gerar_numero_pedido
 from app.services.frete_service import formatar_preco
+from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(prefix="/pedidos", tags=["pedidos"])
 
@@ -139,6 +140,7 @@ def criar_pedido(
 
     db.commit()
     db.refresh(pedido)
+    trigger_order_email_event(db, "order_created", pedido)
 
     return CriarPedidoResponse(
         numero_pedido=pedido.numero,

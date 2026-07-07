@@ -12,8 +12,10 @@ from app.database import get_db
 from app.dependencies import is_master_admin_email
 from app.models.usuario import Usuario
 from app.models.reset_senha import ResetSenha
+from app.core.config import settings
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.core.email import enviar_email_codigo_acesso, enviar_email_reset
+from app.modules.email.service import EmailAutomationService
 from app.services.two_factor_service import (
     CreatedTwoFactorChallenge,
     TwoFactorError,
@@ -311,6 +313,21 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
     user.senha_hash = get_password_hash(data.nova_senha)
     registro_valido.usado = True
     db.commit()
+    try:
+        EmailAutomationService(db).trigger_event(
+            "password_changed",
+            {
+                "to": user.email,
+                "email": user.email,
+                "customer_name": user.nome_completo or user.username,
+                "user_id": user.id,
+                "store_name": settings.STORE_NAME,
+                "store_url": settings.STORE_URL or settings.FRONTEND_URL,
+                "dedupe_key": f"password_changed:{user.id}:{registro_valido.id}",
+            },
+        )
+    except Exception:
+        logger.exception("Falha ao disparar email de senha alterada para %s", _email_mascarado(email))
 
     return {"mensagem": "Senha redefinida com sucesso."}
 

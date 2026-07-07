@@ -10,6 +10,8 @@ import app.models  # noqa: F401 — registers all models with Base before create
 from app.core.database import Base, engine
 from app.core.config import settings
 from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners
+from app.modules.email.routes import router as email_admin_router
+from app.modules.email.seeds import seed_email_automation
 from sqlalchemy import inspect, text
 
 Base.metadata.create_all(bind=engine)
@@ -102,6 +104,8 @@ with engine.begin() as _conn:
         {"is_admin": True, "email": settings.MASTER_ADMIN_EMAIL.strip().lower()},
     )
 
+seed_email_automation()
+
 os.makedirs("uploads", exist_ok=True)
 
 limiter = Limiter(key_func=get_remote_address)
@@ -138,6 +142,7 @@ app.include_router(duvidas, prefix="/api/v1")
 app.include_router(pagamentos, prefix="/api/v1")
 app.include_router(banners, prefix="/api/v1")
 app.include_router(admin, prefix="/api/v1")
+app.include_router(email_admin_router, prefix="/api/v1")
 
 
 @app.get("/")

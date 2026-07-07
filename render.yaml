@@ -17,8 +17,18 @@ services:
         value: auto
       - key: EMAIL_FROM_NAME
         value: Bia Collections
+      - key: STORE_NAME
+        value: Bia Collections
+      - key: STORE_URL
+        sync: false
       - key: EMAIL_FROM
         sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: EMAIL_QUEUE_BACKEND
+        value: auto
+      - key: EMAIL_QUEUE_NAME
+        value: bia-email
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_API_URL

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     EMAIL_PROVIDER: str = "auto"  # auto, resend, brevo, smtp
     EMAIL_FROM_NAME: str = "Bia Collections"
     EMAIL_FROM: str = ""
+    STORE_NAME: str = "Bia Collections"
+    STORE_URL: str = ""
 
     # HTTP email APIs
     RESEND_API_KEY: str = ""
@@ -38,6 +40,11 @@ class Settings(BaseSettings):
     TWO_FACTOR_MAX_ATTEMPTS: int = 5
     TWO_FACTOR_RESEND_COOLDOWN_SECONDS: int = 60
     TWO_FACTOR_RESEND_HOURLY_LIMIT: int = 5
+
+    # Email queue. Use REDIS_URL + EMAIL_QUEUE_BACKEND=rq for RQ workers.
+    REDIS_URL: str = ""
+    EMAIL_QUEUE_BACKEND: str = "auto"  # auto, rq, thread
+    EMAIL_QUEUE_NAME: str = "bia-email"
 
     # Mercado Pago — configure in .env
     MP_ACCESS_TOKEN: str = ""

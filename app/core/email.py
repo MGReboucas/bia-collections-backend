@@ -7,6 +7,7 @@ from email.utils import parseaddr
 import httpx
 
 from app.core.config import settings
+from app.modules.email.templates import password_reset_code_email, two_factor_code_email
 
 
 EMAIL_TIMEOUT_SECONDS = 15
@@ -162,50 +163,22 @@ def _send_email(destinatario: str, subject: str, text: str | None = None, html: 
 
 def enviar_email_reset(destinatario: str, codigo: str) -> None:
     """Envia o codigo de redefinicao de senha por email."""
-    html = f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; background: #F5F5F5; padding: 32px;">
-        <div style="max-width: 480px; margin: auto; background: #fff;
-                    border-radius: 16px; padding: 40px; text-align: center;">
-          <h2 style="color: #111111; margin-bottom: 8px;">Redefinição de Senha</h2>
-          <p style="color: #555; font-size: 15px; margin-bottom: 28px;">
-            Use o código abaixo para redefinir sua senha.<br>
-            Ele expira em <strong>15 minutos</strong>.
-          </p>
-          <div style="background: #F5F5F5; border-radius: 12px;
-                      padding: 20px 32px; display: inline-block; margin-bottom: 28px;">
-            <span style="font-size: 36px; font-weight: 900;
-                         letter-spacing: 12px; color: #111111;">{codigo}</span>
-          </div>
-          <p style="color: #999; font-size: 13px;">
-            Se você não solicitou isso, ignore este e-mail.
-          </p>
-        </div>
-      </body>
-    </html>
-    """
-    text = (
-        f"Use o codigo {codigo} para redefinir sua senha.\n"
-        "Ele expira em 15 minutos.\n\n"
-        "Se voce nao solicitou isso, ignore este e-mail."
-    )
+    message = password_reset_code_email(codigo)
 
     _send_email(
         destinatario,
-        "Redefinição de senha — Bia Collections",
-        text=text,
-        html=html,
+        message.subject,
+        text=message.text,
+        html=message.html,
     )
 
 
 def enviar_email_codigo_acesso(destinatario: str, codigo: str) -> None:
-    corpo = (
-        f"Seu codigo de acesso e: {codigo}\n\n"
-        "Ele expira em 10 minutos. Se voce nao tentou entrar, ignore este e-mail."
-    )
+    message = two_factor_code_email(codigo)
 
     _send_email(
         destinatario,
-        "Seu codigo de acesso - Bia Collections",
-        text=corpo,
+        message.subject,
+        text=message.text,
+        html=message.html,
     )

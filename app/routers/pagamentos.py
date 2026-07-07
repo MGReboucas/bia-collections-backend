@@ -34,8 +34,18 @@ from app.dependencies import get_current_user
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
+from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(prefix="/pagamentos", tags=["pagamentos"])
+
+PAYMENT_EMAIL_EVENTS = {
+    "approved": "payment_approved",
+    "pending": "payment_pending",
+    "in_process": "payment_pending",
+    "rejected": "payment_refused",
+    "cancelled": "payment_expired",
+    "refunded": "refund_completed",
+}
 
 
 def _get_sdk() -> mercadopago.SDK:
@@ -127,6 +137,7 @@ def criar_pagamento_pix(
     )
     db.add(pagamento)
     db.commit()
+    trigger_order_email_event(db, "pix_generated", pedido, extra={"pix_code": qr_code})
 
     return {
         "qr_code": qr_code,
@@ -215,6 +226,12 @@ def criar_preferencia(
     )
     db.add(pagamento)
     db.commit()
+    trigger_order_email_event(
+        db,
+        "payment_pending",
+        pedido,
+        extra={"payment_link": checkout_url_prod or checkout_url},
+    )
 
     return {
         "checkout_url": checkout_url,
@@ -277,6 +294,10 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         pagamento.status = novo_status_pagamento
 
     db.commit()
+    event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
+    if pedido and event_key:
+        db.refresh(pedido)
+        trigger_order_email_event(db, event_key, pedido)
     return {"status": "ok"}
 
 
