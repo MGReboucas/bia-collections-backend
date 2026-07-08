@@ -1,6 +1,7 @@
 import importlib
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -822,6 +823,135 @@ def test_master_admin_atualiza_produto_sem_imagens_mantem_galeria(client, monkey
     assert body["imagens"][0]["cor_nome"] is None
     assert body["imagens"][0]["modelo"] is None
     assert body["imagens"][0]["cor"] is None
+
+
+def test_master_admin_atualiza_produto_preserva_descricao_e_salva_metadata_por_url(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        categoria = Categoria(nome="Acessorios")
+        db.add(categoria)
+        db.flush()
+        produto = Produto(
+            nome="Relogio modelos",
+            descricao="Descricao publica preenchida",
+            preco=189.9,
+            preco_promocional=169.9,
+            estoque=5,
+            categoria_id=categoria.id,
+            tamanhos=json.dumps(["Unico"]),
+            cores=json.dumps(["Branco", "Cinza", "Dourado", "Marrom", "Preto"]),
+            imagem_url="/uploads/produtos/relogio-branco.webp",
+            ativo=True,
+            imagens=[
+                ProdutoImagem(
+                    imagem_url="/uploads/produtos/relogio-branco.webp",
+                    ordem=0,
+                    principal=True,
+                    modelo_nome="Branco",
+                    cor_nome="Branco",
+                ),
+                ProdutoImagem(
+                    imagem_url="/uploads/produtos/relogio-dourado.webp",
+                    ordem=1,
+                    principal=False,
+                    modelo_nome="Cinza",
+                    cor_nome="Cinza",
+                ),
+            ],
+        )
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+        categoria_id = categoria.id
+    finally:
+        db.close()
+
+    def fail_delete_old_image(url):
+        raise AssertionError("Imagem mantida nao deve ser removida")
+
+    monkeypatch.setattr(admin_module, "delete_old_image", fail_delete_old_image)
+
+    response = client.put(
+        f"/api/v1/admin/produtos/{produto_id}",
+        data={
+            "nome": "Relogio modelos editado",
+            "descricao": "",
+            "preco": "199.9",
+            "preco_promocional": "159.9",
+            "estoque": "12",
+            "categoria_id": str(categoria_id),
+            "tamanhos": "Unico,Ajustavel",
+            "cores": "Branco,Cinza,Dourado,Marrom,Preto",
+            "ativo": "true",
+            "imagens_manter": json.dumps(
+                [
+                    "https://loja.example.test/uploads/produtos/relogio-branco.webp",
+                    "/uploads/produtos/relogio-dourado.webp",
+                ]
+            ),
+            "capa_url": "https://loja.example.test/uploads/produtos/relogio-dourado.webp",
+            "imagens_metadata": json.dumps(
+                [
+                    {
+                        "url": "https://loja.example.test/uploads/produtos/relogio-branco.webp",
+                        "ordem": 0,
+                        "principal": False,
+                        "modelo": "Branco",
+                        "cor": "Branco",
+                    },
+                    {
+                        "url": "https://loja.example.test/uploads/produtos/relogio-dourado.webp",
+                        "ordem": 1,
+                        "principal": True,
+                        "modelo": "Dourado",
+                        "cor": "Dourado",
+                    },
+                ]
+            ),
+        },
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["descricao"] == "Descricao publica preenchida"
+    assert body["preco_promocional"] == 159.9
+    assert body["estoque"] == 12
+    assert body["categoria"] == "Acessorios"
+    assert body["tamanhos"] == ["Unico", "Ajustavel"]
+    assert body["cores"] == ["Branco", "Cinza", "Dourado", "Marrom", "Preto"]
+    assert body["imagem_url"] == "/uploads/produtos/relogio-dourado.webp"
+    assert [imagem["imagem_url"] for imagem in body["imagens"]] == [
+        "/uploads/produtos/relogio-branco.webp",
+        "/uploads/produtos/relogio-dourado.webp",
+    ]
+    assert [imagem["ordem"] for imagem in body["imagens"]] == [0, 1]
+    assert [imagem["principal"] for imagem in body["imagens"]] == [False, True]
+    assert body["imagens"][1]["modelo"] == "Dourado"
+    assert body["imagens"][1]["cor"] == "Dourado"
+
+    detalhe = client.get(f"/api/v1/produtos/{produto_id}")
+    assert detalhe.status_code == 200
+    detalhe_body = detalhe.json()
+    assert detalhe_body["descricao"] == "Descricao publica preenchida"
+    assert detalhe_body["imagens"] == body["imagens"]
+
+    db = SessionLocal()
+    try:
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.descricao == "Descricao publica preenchida"
+        assert produto.preco_promocional == 159.9
+        assert produto.estoque == 12
+        assert json.loads(produto.tamanhos) == ["Unico", "Ajustavel"]
+        assert json.loads(produto.cores) == ["Branco", "Cinza", "Dourado", "Marrom", "Preto"]
+        imagens = sorted(produto.imagens, key=lambda imagem: imagem.ordem)
+        assert imagens[1].imagem_url == "/uploads/produtos/relogio-dourado.webp"
+        assert imagens[1].modelo_nome == "Dourado"
+        assert imagens[1].cor_nome == "Dourado"
+        assert imagens[1].principal is True
+    finally:
+        db.close()
 
 
 def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypatch):

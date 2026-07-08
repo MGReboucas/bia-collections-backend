@@ -17,7 +17,6 @@ def _produto_imagens_response(produto: Produto) -> list[dict]:
     imagens = sorted(
         produto.imagens or [],
         key=lambda imagem: (
-            not bool(imagem.principal),
             imagem.ordem if imagem.ordem is not None else 0,
             imagem.id or 0,
         ),
@@ -26,8 +25,10 @@ def _produto_imagens_response(produto: Produto) -> list[dict]:
         {
             "id": imagem.id,
             "imagem_url": imagem.imagem_url,
+            "url": imagem.imagem_url,
             "ordem": imagem.ordem,
             "principal": imagem.principal,
+            "capa": imagem.principal,
             "modelo_nome": imagem.modelo_nome,
             "modelo_cor": imagem.modelo_cor,
             "cor_nome": imagem.cor_nome,

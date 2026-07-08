@@ -5,8 +5,10 @@ from typing import Optional, List
 class ProdutoImagemOut(BaseModel):
     id: int
     imagem_url: str
+    url: Optional[str] = None
     ordem: int
     principal: bool
+    capa: Optional[bool] = None
     modelo_nome: Optional[str] = None
     modelo_cor: Optional[str] = None
     cor_nome: Optional[str] = None
@@ -15,6 +17,10 @@ class ProdutoImagemOut(BaseModel):
 
     @model_validator(mode="after")
     def preencher_aliases(self):
+        if self.url is None:
+            self.url = self.imagem_url
+        if self.capa is None:
+            self.capa = self.principal
         if self.modelo is None:
             self.modelo = self.modelo_nome
         if self.cor is None:

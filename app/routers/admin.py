@@ -1,6 +1,7 @@
 import json
 from datetime import date, datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, field_validator
@@ -159,6 +160,95 @@ def _clean_optional_text(value) -> str | None:
     return text or None
 
 
+def _normalize_image_url(value: str | None) -> str | None:
+    text = _clean_optional_text(value)
+    if not text:
+        return None
+    parsed = urlsplit(text)
+    path = parsed.path or text
+    return path.rstrip("/") or path
+
+
+def _parse_json_or_csv_list(value: Optional[str]) -> list[Any]:
+    if not value:
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, list):
+        return parsed
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _parse_image_keep_urls(value: Optional[str]) -> set[str]:
+    return {
+        normalized
+        for normalized in (_normalize_image_url(str(item)) for item in _parse_json_or_csv_list(value))
+        if normalized
+    }
+
+
+def _parse_optional_index(value: Optional[str]) -> int | None:
+    text = _clean_optional_text(value)
+    if text is None:
+        return None
+    try:
+        index = int(text)
+    except ValueError:
+        return None
+    return index if index >= 0 else None
+
+
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "sim", "yes", "on"}
+
+
+def _parse_image_metadata_items(value: Optional[str]) -> list[dict[str, Any]]:
+    items = _parse_json_or_csv_list(value)
+    parsed: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        url = _clean_optional_text(item.get("url") or item.get("imagem_url"))
+        ordem = item.get("ordem")
+        try:
+            ordem_int = int(ordem) if ordem is not None and str(ordem).strip() != "" else index
+        except (TypeError, ValueError):
+            ordem_int = index
+        modelo = _clean_optional_text(
+            item.get("modelo")
+            or item.get("modelo_nome")
+            or item.get("modeloNome")
+        )
+        cor = _clean_optional_text(
+            item.get("cor")
+            or item.get("cor_nome")
+            or item.get("corNome")
+            or item.get("modelo_cor")
+            or item.get("modeloCor")
+        )
+        parsed.append(
+            {
+                "url": url,
+                "url_key": _normalize_image_url(url),
+                "ordem": ordem_int,
+                "principal": _parse_bool(item.get("principal") if "principal" in item else item.get("capa")),
+                "modelo_nome": modelo,
+                "modelo_cor": cor,
+                "cor_nome": cor,
+            }
+        )
+    return parsed
+
+
 def _parse_indexed_text_list(value: Optional[str]) -> list[str | None]:
     if not value:
         return []
@@ -207,6 +297,21 @@ def _image_metadata(
             "cor_nome": _first_indexed_value(cor_nome_values, index),
         }
         for index in range(total)
+    ]
+
+
+def _legacy_metadata_to_items(metadata: list[dict[str, str | None]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "url": None,
+            "url_key": None,
+            "ordem": index,
+            "principal": index == 0,
+            "modelo_nome": item.get("modelo_nome"),
+            "modelo_cor": item.get("modelo_cor"),
+            "cor_nome": item.get("cor_nome"),
+        }
+        for index, item in enumerate(metadata)
     ]
 
 
@@ -268,14 +373,18 @@ async def _save_product_images(files: List[UploadFile]) -> List[str]:
 
 def _build_product_image_models(
     image_urls: List[str],
-    metadata: list[dict[str, str | None]] | None = None,
+    metadata: list[dict[str, Any]] | None = None,
 ) -> List[ProdutoImagem]:
     metadata = metadata or []
     return [
         ProdutoImagem(
             imagem_url=image_url,
-            ordem=index,
-            principal=index == 0,
+            ordem=int(metadata[index].get("ordem", index)) if index < len(metadata) else index,
+            principal=(
+                bool(metadata[index].get("principal"))
+                if index < len(metadata) and metadata[index].get("principal") is not None
+                else index == 0
+            ),
             modelo_nome=(metadata[index].get("modelo_nome") if index < len(metadata) else None),
             modelo_cor=(metadata[index].get("modelo_cor") if index < len(metadata) else None),
             cor_nome=(metadata[index].get("cor_nome") if index < len(metadata) else None),
@@ -286,12 +395,11 @@ def _build_product_image_models(
 
 def _apply_product_image_metadata(
     produto: Produto,
-    metadata: list[dict[str, str | None]],
+    metadata: list[dict[str, Any]],
 ) -> None:
     imagens = sorted(
         produto.imagens or [],
         key=lambda imagem: (
-            not bool(imagem.principal),
             imagem.ordem if imagem.ordem is not None else 0,
             imagem.id or 0,
         ),
@@ -304,11 +412,126 @@ def _apply_product_image_metadata(
         imagem.cor_nome = metadata[index].get("cor_nome")
 
 
+def _apply_metadata_to_image(imagem: ProdutoImagem, metadata: dict[str, Any]) -> None:
+    imagem.ordem = int(metadata.get("ordem") if metadata.get("ordem") is not None else imagem.ordem or 0)
+    imagem.modelo_nome = metadata.get("modelo_nome")
+    imagem.modelo_cor = metadata.get("modelo_cor")
+    imagem.cor_nome = metadata.get("cor_nome")
+
+
+def _sync_product_images(
+    *,
+    produto: Produto,
+    kept_urls: set[str] | None,
+    new_image_urls: list[str],
+    metadata_items: list[dict[str, Any]],
+    principal_url: str | None,
+    principal_index: int | None,
+) -> tuple[set[str], list[str]]:
+    existing_images = sorted(
+        produto.imagens or [],
+        key=lambda imagem: (
+            imagem.ordem if imagem.ordem is not None else 0,
+            imagem.id or 0,
+        ),
+    )
+    old_urls = _product_image_urls(produto)
+    existing_by_url = {
+        normalized: imagem
+        for imagem in existing_images
+        if (normalized := _normalize_image_url(imagem.imagem_url))
+    }
+    metadata_by_url = {
+        item["url_key"]: item
+        for item in metadata_items
+        if item.get("url_key")
+    }
+    metadata_without_url = [item for item in metadata_items if not item.get("url_key")]
+
+    if kept_urls is None:
+        selected_existing = existing_images
+    else:
+        selected_existing = [
+            imagem
+            for imagem in existing_images
+            if _normalize_image_url(imagem.imagem_url) in kept_urls
+        ]
+
+    final_images: list[ProdutoImagem] = []
+    for index, imagem in enumerate(selected_existing):
+        metadata = metadata_by_url.get(_normalize_image_url(imagem.imagem_url))
+        if metadata is None and index < len(metadata_without_url):
+            metadata = metadata_without_url[index]
+        if metadata is not None:
+            _apply_metadata_to_image(imagem, metadata)
+        final_images.append(imagem)
+
+    new_start = len(final_images)
+    for index, image_url in enumerate(new_image_urls):
+        metadata = metadata_by_url.get(_normalize_image_url(image_url))
+        if metadata is None:
+            metadata_index = new_start + index
+            if metadata_index < len(metadata_without_url):
+                metadata = metadata_without_url[metadata_index]
+        imagem = ProdutoImagem(
+            imagem_url=image_url,
+            ordem=metadata.get("ordem", new_start + index) if metadata else new_start + index,
+            principal=False,
+            modelo_nome=metadata.get("modelo_nome") if metadata else None,
+            modelo_cor=metadata.get("modelo_cor") if metadata else None,
+            cor_nome=metadata.get("cor_nome") if metadata else None,
+        )
+        final_images.append(imagem)
+
+    final_images.sort(key=lambda imagem: (imagem.ordem if imagem.ordem is not None else 0, imagem.id or 0))
+    for index, imagem in enumerate(final_images):
+        imagem.ordem = index
+
+    principal_key = _normalize_image_url(principal_url)
+    principal_image: ProdutoImagem | None = None
+    if principal_key:
+        principal_image = next(
+            (imagem for imagem in final_images if _normalize_image_url(imagem.imagem_url) == principal_key),
+            None,
+        )
+    if principal_image is None and principal_index is not None and principal_index < len(final_images):
+        principal_image = final_images[principal_index]
+    if principal_image is None:
+        principal_metadata = next(
+            (item for item in metadata_items if item.get("principal")),
+            None,
+        )
+        if principal_metadata:
+            metadata_key = principal_metadata.get("url_key")
+            if metadata_key:
+                principal_image = existing_by_url.get(metadata_key) or next(
+                    (
+                        imagem
+                        for imagem in final_images
+                        if _normalize_image_url(imagem.imagem_url) == metadata_key
+                    ),
+                    None,
+                )
+            else:
+                principal_ordem = principal_metadata.get("ordem")
+                if isinstance(principal_ordem, int) and principal_ordem < len(final_images):
+                    principal_image = final_images[principal_ordem]
+    if principal_image is None:
+        principal_image = next((imagem for imagem in final_images if imagem.principal), None)
+    if principal_image is None and final_images:
+        principal_image = final_images[0]
+
+    for imagem in final_images:
+        imagem.principal = imagem is principal_image
+    produto.imagens = final_images
+    produto.imagem_url = principal_image.imagem_url if principal_image else None
+    return old_urls, [imagem.imagem_url for imagem in final_images]
+
+
 def _produto_imagens_response(produto: Produto) -> list[dict]:
     imagens = sorted(
         produto.imagens or [],
         key=lambda imagem: (
-            not bool(imagem.principal),
             imagem.ordem if imagem.ordem is not None else 0,
             imagem.id or 0,
         ),
@@ -317,8 +540,10 @@ def _produto_imagens_response(produto: Produto) -> list[dict]:
         {
             "id": imagem.id,
             "imagem_url": imagem.imagem_url,
+            "url": imagem.imagem_url,
             "ordem": imagem.ordem,
             "principal": imagem.principal,
+            "capa": imagem.principal,
             "modelo_nome": imagem.modelo_nome,
             "modelo_cor": imagem.modelo_cor,
             "cor_nome": imagem.cor_nome,
@@ -841,7 +1066,7 @@ async def criar_produto(
 async def atualizar_produto(
     produto_id: int,
     nome: str = Form(...),
-    descricao: str = Form(""),
+    descricao: Optional[str] = Form(None),
     preco: float = Form(...),
     preco_promocional: Optional[float] = Form(None),
     estoque: Optional[int] = Form(None),
@@ -855,6 +1080,12 @@ async def atualizar_produto(
     modelos_nomes: Optional[str] = Form(None),
     modelo_cores: Optional[str] = Form(None),
     cores_nomes: Optional[str] = Form(None),
+    imagens_manter: Optional[str] = Form(None),
+    imagem_principal_url: Optional[str] = Form(None),
+    capa_url: Optional[str] = Form(None),
+    imagem_principal_index: Optional[str] = Form(None),
+    capa_indice: Optional[str] = Form(None),
+    imagens_metadata: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
@@ -868,17 +1099,43 @@ async def atualizar_produto(
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
 
     image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
-    old_image_urls = _product_image_urls(produto) if image_files else set()
     image_urls = await _save_product_images(image_files) if image_files else []
-    image_metadata = _image_metadata(
+    legacy_image_metadata = _image_metadata(
         modelos=modelos,
         modelos_nomes=modelos_nomes,
         modelo_cores=modelo_cores,
         cores_nomes=cores_nomes,
     )
+    metadata_items = _parse_image_metadata_items(imagens_metadata)
+    if not metadata_items:
+        metadata_items = _legacy_metadata_to_items(legacy_image_metadata)
+    if imagens_manter is not None:
+        keep_urls = _parse_image_keep_urls(imagens_manter)
+    elif image_files:
+        keep_urls = set()
+    else:
+        keep_urls = None
+    explicit_principal_url = _clean_optional_text(imagem_principal_url) or _clean_optional_text(capa_url)
+    imagem_principal_index_value = _parse_optional_index(imagem_principal_index)
+    explicit_principal_index = (
+        imagem_principal_index_value
+        if imagem_principal_index_value is not None
+        else _parse_optional_index(capa_indice)
+    )
+    should_sync_images = any(
+        [
+            image_files,
+            imagens_manter is not None,
+            imagens_metadata is not None,
+            explicit_principal_url is not None,
+            explicit_principal_index is not None,
+        ]
+    )
 
     produto.nome = nome.strip()
-    produto.descricao = descricao.strip() or None
+    descricao_limpa = _clean_optional_text(descricao)
+    if descricao_limpa is not None:
+        produto.descricao = descricao_limpa
     produto.preco = preco
     produto.preco_promocional = preco_promocional
     produto.estoque = estoque
@@ -886,16 +1143,25 @@ async def atualizar_produto(
     produto.tamanhos = _split_csv(tamanhos)
     produto.cores = _split_csv(cores)
     produto.ativo = ativo
-    if image_files:
-        produto.imagens = _build_product_image_models(image_urls, image_metadata)
-        produto.imagem_url = image_urls[0] if image_urls else None
-    elif _has_image_metadata(image_metadata):
-        _apply_product_image_metadata(produto, image_metadata)
+    if should_sync_images:
+        old_image_urls, final_image_urls = _sync_product_images(
+            produto=produto,
+            kept_urls=keep_urls,
+            new_image_urls=image_urls,
+            metadata_items=metadata_items,
+            principal_url=explicit_principal_url,
+            principal_index=explicit_principal_index,
+        )
+    elif _has_image_metadata(legacy_image_metadata):
+        _apply_product_image_metadata(produto, legacy_image_metadata)
+        old_image_urls, final_image_urls = set(), []
+    else:
+        old_image_urls, final_image_urls = set(), []
 
     db.commit()
     db.refresh(produto)
-    if image_files:
-        _delete_replaced_product_images(old_image_urls, image_urls)
+    if should_sync_images:
+        _delete_replaced_product_images(old_image_urls, final_image_urls)
     return _produto_response(produto)
 
 
