@@ -10,7 +10,7 @@ from app.dependencies import get_current_user
 from app.models.usuario import Usuario
 from app.models.produto import Produto
 from app.models.pedido import Pedido, ItemPedido
-from app.models.cupom import Cupom, CupomUsado
+from app.models.cupom import Cupom
 from app.schemas.pedido import (
     CriarPedidoRequest,
     CriarPedidoResponse,
@@ -21,8 +21,7 @@ from app.schemas.pedido import (
 )
 from app.services.pedido_service import gerar_numero_pedido
 from app.services.frete_service import formatar_preco
-from app.services.payment_status import ORDER_STATUS_AGUARDANDO
-from app.modules.email.service import trigger_order_email_event
+from app.services.payment_status import ORDER_STATUS_AGUARDANDO, ORDER_STATUSES_OPERACIONAIS
 
 router = APIRouter(prefix="/pedidos", tags=["pedidos"])
 
@@ -154,21 +153,8 @@ def criar_pedido(
             )
         )
 
-    if cupom_codigo_aplicado:
-        cupom_obj = db.query(Cupom).filter(Cupom.codigo == cupom_codigo_aplicado).first()
-        if cupom_obj:
-            db.add(
-                CupomUsado(
-                    cupom_id=cupom_obj.id,
-                    usuario_id=current_user.id,
-                    pedido_id=pedido.id,
-                )
-            )
-            cupom_obj.total_usos = (cupom_obj.total_usos or 0) + 1
-
     db.commit()
     db.refresh(pedido)
-    trigger_order_email_event(db, "order_created", pedido)
 
     return CriarPedidoResponse(
         numero_pedido=pedido.numero,
@@ -185,20 +171,21 @@ def criar_pedido(
 
 @router.get("", response_model=List[PedidoListItem])
 def listar_pedidos(
+    incluir_pendentes: bool = Query(False),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
-    pedidos = (
+    query = (
         db.query(Pedido)
         .options(joinedload(Pedido.itens))
         .filter(Pedido.usuario_id == current_user.id)
         .order_by(Pedido.criado_em.desc())
-        .offset((page - 1) * limit)
-        .limit(limit)
-        .all()
     )
+    if not incluir_pendentes:
+        query = query.filter(Pedido.status.in_(list(ORDER_STATUSES_OPERACIONAIS)))
+    pedidos = query.offset((page - 1) * limit).limit(limit).all()
     return [
         PedidoListItem(
             numero=p.numero,

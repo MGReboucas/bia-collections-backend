@@ -24,13 +24,18 @@ from app.models.avaliacao import Avaliacao
 from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomUsado
 from app.models.duvida import Duvida
+from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido, ItemPedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.usuario import Usuario
 from app.schemas.duvida import DuvidaOut
-from app.schemas.pedido import PedidoListItem
 from app.services.frete_service import formatar_preco
-from app.services.payment_status import ORDER_STATUSES, ORDER_STATUS_EMAIL_EVENTS
+from app.services.payment_status import (
+    ORDER_STATUS_AGUARDANDO,
+    ORDER_STATUS_EMAIL_EVENTS,
+    ORDER_STATUSES,
+    ORDER_STATUSES_OPERACIONAIS,
+)
 from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(
@@ -294,6 +299,20 @@ def _usuario_admin_response(usuario: Usuario) -> dict:
     }
 
 
+def _pagamento_admin_response(pagamento: Pagamento | None) -> dict | None:
+    if not pagamento:
+        return None
+    return {
+        "tipo": pagamento.tipo,
+        "status": pagamento.status,
+        "mp_status": pagamento.mp_status,
+        "mp_payment_id": pagamento.mp_payment_id,
+        "mp_preference_id": pagamento.mp_preference_id,
+        "valor": pagamento.valor,
+        "atualizado_em": pagamento.atualizado_em.isoformat() if pagamento.atualizado_em else None,
+    }
+
+
 @router.get("/stats")
 def stats(
     db: Session = Depends(get_db),
@@ -301,10 +320,10 @@ def stats(
 ):
     receita_total = (
         db.query(func.coalesce(func.sum(Pedido.total), 0.0))
-        .filter(Pedido.status.in_(["Pago", "Preparando", "Enviado", "Entregue"]))
+        .filter(Pedido.status.in_(list(ORDER_STATUSES_OPERACIONAIS)))
         .scalar()
     )
-    pedidos_pendentes = db.query(Pedido).filter(Pedido.status == "Aguardando pagamento").count()
+    pedidos_pendentes = db.query(Pedido).filter(Pedido.status == ORDER_STATUS_AGUARDANDO).count()
 
     return {
         "total_pedidos": db.query(Pedido).count(),
@@ -330,7 +349,7 @@ def grafico_receita(
     pedidos = (
         db.query(Pedido)
         .filter(
-            Pedido.status != "Cancelado",
+            Pedido.status.in_(list(ORDER_STATUSES_OPERACIONAIS)),
             Pedido.criado_em >= inicio_dt,
         )
         .all()
@@ -357,9 +376,10 @@ def grafico_receita(
     ]
 
 
-@router.get("/pedidos", response_model=List[PedidoListItem])
+@router.get("/pedidos")
 def listar_pedidos_admin(
     status: Optional[str] = Query(None),
+    incluir_pendentes: bool = Query(False),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -368,16 +388,27 @@ def listar_pedidos_admin(
     query = db.query(Pedido).options(joinedload(Pedido.itens)).order_by(Pedido.criado_em.desc())
     if status:
         query = query.filter(Pedido.status == status)
+    elif not incluir_pendentes:
+        query = query.filter(Pedido.status.in_(list(ORDER_STATUSES_OPERACIONAIS)))
 
     pedidos = query.offset((page - 1) * limit).limit(limit).all()
+    pagamentos_por_pedido = {}
+    for pagamento in (
+        db.query(Pagamento)
+        .filter(Pagamento.pedido_numero.in_([pedido.numero for pedido in pedidos]))
+        .order_by(Pagamento.id.desc())
+        .all()
+    ):
+        pagamentos_por_pedido.setdefault(pagamento.pedido_numero, pagamento)
     return [
-        PedidoListItem(
-            numero=pedido.numero,
-            data=pedido.criado_em.isoformat() if pedido.criado_em else "",
-            status=pedido.status,
-            total_formatado=formatar_preco(pedido.total),
-            total_itens=sum(item.quantidade for item in pedido.itens),
-        )
+        {
+            "numero": pedido.numero,
+            "data": pedido.criado_em.isoformat() if pedido.criado_em else "",
+            "status": pedido.status,
+            "total_formatado": formatar_preco(pedido.total),
+            "total_itens": sum(item.quantidade for item in pedido.itens),
+            "pagamento": _pagamento_admin_response(pagamentos_por_pedido.get(pedido.numero)),
+        }
         for pedido in pedidos
     ]
 
@@ -418,6 +449,13 @@ def detalhe_pedido_admin(
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido não encontrado.")
 
+    pagamento = (
+        db.query(Pagamento)
+        .filter(Pagamento.pedido_numero == pedido.numero)
+        .order_by(Pagamento.id.desc())
+        .first()
+    )
+
     endereco = None
     if pedido.endereco_cep:
         endereco = {
@@ -446,6 +484,7 @@ def detalhe_pedido_admin(
         "desconto_aplicado": pedido.desconto_aplicado,
         "cupom_codigo": pedido.cupom_codigo,
         "codigo_rastreio": pedido.codigo_rastreio,
+        "pagamento": _pagamento_admin_response(pagamento),
         "usuario_nome": pedido.usuario.nome_completo if pedido.usuario else None,
         "usuario_email": pedido.usuario.email if pedido.usuario else None,
         "itens": [

@@ -1,5 +1,6 @@
 ORDER_STATUS_AGUARDANDO = "Aguardando pagamento"
-ORDER_STATUS_PAGO = "Pago"
+ORDER_STATUS_PAGO = "Pagamento aprovado"
+ORDER_STATUS_PAGO_LEGACY = "Pago"
 ORDER_STATUS_PREPARANDO = "Preparando"
 ORDER_STATUS_ENVIADO = "Enviado"
 ORDER_STATUS_ENTREGUE = "Entregue"
@@ -12,6 +13,7 @@ ORDER_STATUS_ESTORNADO = "Estornado"
 ORDER_STATUSES = {
     ORDER_STATUS_AGUARDANDO,
     ORDER_STATUS_PAGO,
+    ORDER_STATUS_PAGO_LEGACY,
     ORDER_STATUS_PREPARANDO,
     ORDER_STATUS_ENVIADO,
     ORDER_STATUS_ENTREGUE,
@@ -24,6 +26,7 @@ ORDER_STATUSES = {
 
 ORDER_STATUS_EMAIL_EVENTS = {
     ORDER_STATUS_PAGO: "payment_approved",
+    ORDER_STATUS_PAGO_LEGACY: "payment_approved",
     ORDER_STATUS_PREPARANDO: "order_preparing",
     ORDER_STATUS_ENVIADO: "order_shipped",
     ORDER_STATUS_ENTREGUE: "order_delivered",
@@ -31,6 +34,15 @@ ORDER_STATUS_EMAIL_EVENTS = {
     ORDER_STATUS_RECUSADO: "payment_refused",
     ORDER_STATUS_REEMBOLSADO: "refund_completed",
     ORDER_STATUS_EXPIRADO: "payment_expired",
+}
+
+ORDER_STATUSES_PAGOS = {ORDER_STATUS_PAGO, ORDER_STATUS_PAGO_LEGACY}
+ORDER_STATUSES_OPERACIONAIS = {
+    ORDER_STATUS_PAGO,
+    ORDER_STATUS_PAGO_LEGACY,
+    ORDER_STATUS_PREPARANDO,
+    ORDER_STATUS_ENVIADO,
+    ORDER_STATUS_ENTREGUE,
 }
 
 MP_TO_ORDER_STATUS = {
@@ -55,8 +67,6 @@ MP_TO_PAYMENT_STATUS = {
 
 PAYMENT_EMAIL_EVENTS = {
     "approved": "payment_approved",
-    "pending": "payment_pending",
-    "in_process": "payment_pending",
     "rejected": "payment_refused",
     "cancelled": "payment_expired",
     "refunded": "refund_completed",

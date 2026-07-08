@@ -20,7 +20,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.reset_senha import ResetSenha
-from app.models.cupom import Cupom
+from app.models.cupom import Cupom, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
@@ -1022,6 +1022,8 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
         assert pedido.valor_frete == 0.0
         assert pedido.tipo_frete == "PAC"
         assert pedido.prazo_frete == "7 a 10 dias"
+        assert db.query(CupomUsado).count() == 0
+        assert db.query(Cupom).filter(Cupom.codigo == "FRETE").one().total_usos == 0
     finally:
         db.close()
 
@@ -1076,6 +1078,58 @@ def test_criar_pedido_usa_preco_promocional_quando_existir(client):
         db.close()
 
 
+def test_admin_pedidos_oculta_pagamentos_pendentes_por_padrao(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    cliente_id = create_user("cliente-admin-pedidos", "cliente-admin-pedidos@example.com")
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                Pedido(
+                    numero="0000100",
+                    usuario_id=cliente_id,
+                    status="Aguardando pagamento",
+                    forma_pagamento="pix",
+                    subtotal=50.0,
+                    valor_frete=0.0,
+                    total=50.0,
+                ),
+                Pedido(
+                    numero="0000101",
+                    usuario_id=cliente_id,
+                    status="Pagamento aprovado",
+                    forma_pagamento="pix",
+                    subtotal=75.0,
+                    valor_frete=0.0,
+                    total=75.0,
+                ),
+            ]
+        )
+        db.add(
+            Pagamento(
+                pedido_numero="0000101",
+                tipo="pix",
+                valor=75.0,
+                status="aprovado",
+                mp_status="approved",
+                mp_payment_id="pay_admin_1",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    headers = auth_headers("master")
+    padrao = client.get("/api/v1/admin/pedidos", headers=headers)
+    com_pendentes = client.get("/api/v1/admin/pedidos?incluir_pendentes=true", headers=headers)
+
+    assert padrao.status_code == 200
+    assert [pedido["numero"] for pedido in padrao.json()] == ["0000101"]
+    assert padrao.json()[0]["pagamento"]["status"] == "aprovado"
+    assert com_pendentes.status_code == 200
+    assert {pedido["numero"] for pedido in com_pendentes.json()} == {"0000100", "0000101"}
+
+
 def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     create_user("cliente-pix", "cliente-pix@example.com")
     db = SessionLocal()
@@ -1120,8 +1174,14 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
         }
 
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_NOTIFICATION_URL", "https://api.example.test")
     monkeypatch.setattr(pagamentos_module, "_criar_order_pix_mp", fake_criar_order_pix_mp)
-    monkeypatch.setattr(pagamentos_module, "trigger_order_email_event", lambda *args, **kwargs: None)
+    email_events = []
+    monkeypatch.setattr(
+        pagamentos_module,
+        "trigger_order_email_event",
+        lambda *args, **kwargs: email_events.append((args, kwargs)),
+    )
 
     headers = auth_headers("cliente-pix")
     first = client.post("/api/v1/pagamentos/pix/0000001", headers=headers)
@@ -1133,9 +1193,13 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     assert second.json()["payment_id"] == "pay_pix_1"
     assert len(creates) == 1
     assert creates[0]["total_amount"] == "60.00"
+    assert creates[0]["external_reference"] == "0000001"
+    assert creates[0]["notification_url"] == "https://api.example.test/api/v1/pagamentos/webhook"
+    assert creates[0]["metadata"] == {"pedido_numero": "0000001", "payment_flow": "pix"}
     payment = creates[0]["transactions"]["payments"][0]
     assert payment["amount"] == "60.00"
     assert payment["payment_method"] == {"id": "pix", "type": "bank_transfer"}
+    assert email_events == []
 
 
 def test_pagamento_pix_traduz_erro_credenciais_live():
@@ -1155,6 +1219,16 @@ def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
     db = SessionLocal()
     try:
         user = db.query(Usuario).filter(Usuario.username == "cliente-webhook").one()
+        cupom = Cupom(
+            codigo="WEBHOOK10",
+            descricao="Cupom webhook",
+            tipo="valor",
+            valor=10.0,
+            validade=datetime.now(timezone.utc).date() + timedelta(days=1),
+            ativo=True,
+        )
+        db.add(cupom)
+        db.flush()
         pedido = Pedido(
             numero="0000002",
             usuario_id=user.id,
@@ -1163,6 +1237,8 @@ def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
             subtotal=80.0,
             valor_frete=15.0,
             total=95.0,
+            cupom_codigo=cupom.codigo,
+            desconto_aplicado=10.0,
         )
         db.add(pedido)
         db.flush()
@@ -1189,7 +1265,7 @@ def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
                 "response": {
                     "id": payment_id,
                     "status": "approved",
-                    "external_reference": "0000002",
+                    "preference_id": "pref_1",
                     "payment_method_id": "visa",
                     "transaction_amount": 95.0,
                 },
@@ -1219,10 +1295,12 @@ def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
     try:
         pedido = db.query(Pedido).filter(Pedido.numero == "0000002").one()
         pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000002").one()
-        assert pedido.status == "Pago"
+        assert pedido.status == "Pagamento aprovado"
         assert pagamento.status == "aprovado"
         assert pagamento.mp_status == "approved"
         assert pagamento.mp_payment_id == "pay_card_1"
+        assert db.query(CupomUsado).filter(CupomUsado.pedido_id == pedido.id).count() == 1
+        assert db.query(Cupom).filter(Cupom.codigo == "WEBHOOK10").one().total_usos == 1
     finally:
         db.close()
 
