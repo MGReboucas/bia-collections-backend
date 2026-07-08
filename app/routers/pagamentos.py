@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import logging
 from uuid import uuid4
 
+import httpx
 import mercadopago
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -24,6 +26,7 @@ from app.services.payment_status import (
 )
 
 router = APIRouter(prefix="/pagamentos", tags=["pagamentos"])
+logger = logging.getLogger(__name__)
 
 PAGAMENTOS_REABRIVEIS = {"pendente", "em_analise"}
 PEDIDOS_SEM_NOVO_PAGAMENTO = {
@@ -31,6 +34,8 @@ PEDIDOS_SEM_NOVO_PAGAMENTO = {
     ORDER_STATUS_CANCELADO,
     ORDER_STATUS_REEMBOLSADO,
 }
+MP_ORDERS_URL = "https://api.mercadopago.com/v1/orders"
+MP_LIVE_CREDENTIALS_ERROR = "Unauthorized use of live credentials"
 
 
 def _get_sdk() -> mercadopago.SDK:
@@ -50,10 +55,6 @@ def _notification_url() -> str | None:
 
 def _data_expiracao_pix() -> datetime:
     return datetime.now(timezone(timedelta(hours=-3))) + timedelta(hours=24)
-
-
-def _formatar_data_mp(data: datetime) -> str:
-    return data.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
 
 
 def _normalizar_datetime(data: datetime | None) -> datetime | None:
@@ -86,6 +87,86 @@ def _validar_pedido_para_novo_pagamento(pedido: Pedido) -> None:
 
 def _idempotency_key(numero_pedido: str, tipo: str) -> str:
     return f"bia-{tipo}-{numero_pedido}-{uuid4().hex}"
+
+
+def _formatar_valor_mp(valor: float) -> str:
+    return f"{float(valor):.2f}"
+
+
+def _mensagem_erro_mp(response: dict) -> str:
+    if not isinstance(response, dict):
+        return "Erro desconhecido"
+    message = response.get("message") or response.get("error") or response.get("status_detail")
+    cause = response.get("cause") or response.get("errors")
+    if not message and isinstance(cause, list) and cause:
+        first = cause[0]
+        if isinstance(first, dict):
+            message = str(first.get("description") or first.get("message") or first.get("code") or "Erro desconhecido")
+        else:
+            message = str(first)
+    message = str(message or "")
+    if message == MP_LIVE_CREDENTIALS_ERROR:
+        return (
+            "Mercado Pago recusou as credenciais de producao para gerar PIX. "
+            "Confira se a conta vendedora tem Pix/chave Pix liberados e teste com "
+            "um comprador real diferente da conta Mercado Pago vendedora. "
+            f"Mensagem original: {MP_LIVE_CREDENTIALS_ERROR}"
+        )
+    return message or "Erro desconhecido"
+
+
+def _criar_order_pix_mp(payload: dict, idempotency_key: str) -> tuple[int, dict]:
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "Authorization": f"Bearer {settings.MP_ACCESS_TOKEN}",
+        "X-Idempotency-Key": idempotency_key,
+    }
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(MP_ORDERS_URL, headers=headers, json=payload)
+    except httpx.HTTPError:
+        logger.exception("Erro de comunicacao ao criar order PIX no Mercado Pago")
+        raise HTTPException(
+            status_code=502,
+            detail="Erro de comunicacao com o Mercado Pago ao gerar PIX.",
+        )
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if response.status_code not in (200, 201):
+        logger.warning(
+            "Mercado Pago recusou order PIX: status=%s message=%s",
+            response.status_code,
+            _mensagem_erro_mp(body),
+        )
+    return response.status_code, body
+
+
+def _extrair_pix_order(response: dict) -> dict:
+    payments = response.get("transactions", {}).get("payments") or []
+    payment = payments[0] if payments else {}
+    payment_method = payment.get("payment_method") or {}
+    return {
+        "order_id": str(response.get("id") or ""),
+        "payment_id": str(payment.get("id") or response.get("id") or ""),
+        "status": payment.get("status") or response.get("status") or "pending",
+        "qr_code": payment_method.get("qr_code") or "",
+        "qr_code_base64": (
+            payment_method.get("qr_code_base64")
+            or payment_method.get("qr_code_based64")
+            or ""
+        ),
+        "ticket_url": payment_method.get("ticket_url") or "",
+    }
+
+
+def _status_pix_local(mp_status: str) -> str:
+    if mp_status == "action_required":
+        return "pendente"
+    return MP_TO_PAYMENT_STATUS.get(mp_status or "pending", "pendente")
 
 
 def _criar_recurso_mp(resource, payload: dict, idempotency_key: str):
@@ -247,43 +328,61 @@ def criar_pagamento_pix(
         pag_existente.mp_status = pag_existente.mp_status or "expired"
         db.flush()
 
-    sdk = _get_sdk()
+    if not settings.MP_ACCESS_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Pagamentos ainda nao configurados. Contate o suporte.",
+        )
     expiracao = _data_expiracao_pix()
     idempotency_key = _idempotency_key(numero_pedido, "pix")
     nome_partes = (current_user.nome_completo or current_user.username).split(" ", 1)
+    valor = _formatar_valor_mp(pedido.total)
 
-    payment_data = {
-        "transaction_amount": float(pedido.total),
-        "description": f"Bia Collections - Pedido {pedido.numero}",
-        "payment_method_id": "pix",
+    order_data = {
+        "type": "online",
+        "total_amount": valor,
+        "external_reference": pedido.numero,
+        "processing_mode": "automatic",
+        "transactions": {
+            "payments": [
+                {
+                    "amount": valor,
+                    "payment_method": {
+                        "id": "pix",
+                        "type": "bank_transfer",
+                    },
+                }
+            ]
+        },
         "payer": {
             "email": current_user.email,
             "first_name": nome_partes[0],
             "last_name": nome_partes[1] if len(nome_partes) > 1 else "",
         },
-        "date_of_expiration": _formatar_data_mp(expiracao),
-        "external_reference": pedido.numero,
-        "metadata": {
-            "pedido_numero": pedido.numero,
-            "payment_flow": "pix",
-        },
     }
-    notification_url = _notification_url()
-    if notification_url:
-        payment_data["notification_url"] = notification_url
 
-    result = _criar_recurso_mp(sdk.payment(), payment_data, idempotency_key)
-    response = result.get("response", {})
-    if result.get("status") not in (200, 201):
+    result_status, response = _criar_order_pix_mp(order_data, idempotency_key)
+    if result_status not in (200, 201):
         raise HTTPException(
             status_code=502,
-            detail=f"Erro ao gerar PIX: {response.get('message', 'Erro desconhecido')}",
+            detail=f"Erro ao gerar PIX: {_mensagem_erro_mp(response)}",
         )
 
-    tx_data = response.get("point_of_interaction", {}).get("transaction_data", {})
-    qr_code = tx_data.get("qr_code", "")
-    qr_code_base64 = tx_data.get("qr_code_base64", "")
-    payment_id = str(response.get("id", ""))
+    pix_data = _extrair_pix_order(response)
+    qr_code = pix_data["qr_code"]
+    qr_code_base64 = pix_data["qr_code_base64"]
+    payment_id = pix_data["payment_id"]
+    if not qr_code:
+        logger.warning(
+            "Mercado Pago criou order PIX sem QR Code: order_id=%s payment_id=%s status=%s",
+            pix_data["order_id"],
+            payment_id,
+            pix_data["status"],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Mercado Pago criou o pagamento, mas nao retornou o QR Code PIX.",
+        )
 
     pagamento = Pagamento(
         pedido_numero=numero_pedido,
@@ -294,8 +393,8 @@ def criar_pagamento_pix(
         pix_qr_code=qr_code,
         pix_qr_code_base64=qr_code_base64,
         pix_expiracao=expiracao,
-        status=MP_TO_PAYMENT_STATUS.get(response.get("status", "pending"), "pendente"),
-        mp_status=response.get("status"),
+        status=_status_pix_local(pix_data["status"]),
+        mp_status=pix_data["status"],
     )
     db.add(pagamento)
     db.commit()

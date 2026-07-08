@@ -1098,32 +1098,29 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
     creates = []
 
-    class FakePaymentResource:
-        def create(self, payload, *args):
-            creates.append(payload)
-            return {
-                "status": 201,
-                "response": {
-                    "id": "pay_pix_1",
-                    "status": "pending",
-                    "point_of_interaction": {
-                        "transaction_data": {
+    def fake_criar_order_pix_mp(payload, idempotency_key):
+        creates.append(payload)
+        return 201, {
+            "id": "ord_pix_1",
+            "status": "action_required",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_pix_1",
+                        "status": "action_required",
+                        "payment_method": {
+                            "id": "pix",
+                            "type": "bank_transfer",
                             "qr_code": "pix-copia-e-cola",
                             "qr_code_base64": "base64",
-                        }
-                    },
-                },
-            }
-
-    class FakeSDK:
-        def __init__(self, token):
-            self.token = token
-
-        def payment(self):
-            return FakePaymentResource()
+                        },
+                    }
+                ]
+            },
+        }
 
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_pix_mp", fake_criar_order_pix_mp)
     monkeypatch.setattr(pagamentos_module, "trigger_order_email_event", lambda *args, **kwargs: None)
 
     headers = auth_headers("cliente-pix")
@@ -1135,7 +1132,22 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     assert first.json()["payment_id"] == "pay_pix_1"
     assert second.json()["payment_id"] == "pay_pix_1"
     assert len(creates) == 1
-    assert creates[0]["transaction_amount"] == 60.0
+    assert creates[0]["total_amount"] == "60.00"
+    payment = creates[0]["transactions"]["payments"][0]
+    assert payment["amount"] == "60.00"
+    assert payment["payment_method"] == {"id": "pix", "type": "bank_transfer"}
+
+
+def test_pagamento_pix_traduz_erro_credenciais_live():
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    message = pagamentos_module._mensagem_erro_mp({
+        "message": "Unauthorized use of live credentials",
+    })
+
+    assert "credenciais de producao" in message
+    assert "comprador real diferente" in message
+    assert "Unauthorized use of live credentials" in message
 
 
 def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
