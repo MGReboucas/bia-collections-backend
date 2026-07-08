@@ -10,6 +10,9 @@ class Pagamento(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     pedido_numero = Column(String(20), ForeignKey("pedidos.numero"), nullable=False, index=True)
+    tipo = Column(String(30), nullable=False, default="pix")  # pix | checkout_pro
+    valor = Column(Float, nullable=True)
+    idempotency_key = Column(String(120), nullable=True, index=True)
     # PIX
     mp_payment_id = Column(String(100), nullable=True, index=True)
     pix_qr_code = Column(String(2000), nullable=True)       # copia-e-cola
@@ -20,7 +23,8 @@ class Pagamento(Base):
     checkout_url = Column(String(500), nullable=True)       # sandbox
     checkout_url_prod = Column(String(500), nullable=True)  # produção
     # Status
-    status = Column(String(50), default="pendente")  # pendente | aprovado | rejeitado | cancelado
+    status = Column(String(50), default="pendente")  # pendente | aprovado | recusado | cancelado
+    mp_status = Column(String(50), nullable=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
     atualizado_em = Column(DateTime(timezone=True), onupdate=func.now())
 

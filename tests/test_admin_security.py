@@ -1,4 +1,6 @@
 import importlib
+import hashlib
+import hmac
 import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -18,6 +20,9 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.reset_senha import ResetSenha
+from app.models.cupom import Cupom
+from app.models.pagamento import Pagamento
+from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
@@ -963,3 +968,225 @@ def test_payload_token_e_cookie_manipulados_nao_liberam_admin(client):
     )
 
     assert response.status_code == 403
+
+
+def test_criar_pedido_inclui_frete_e_cupom_frete(client):
+    create_user("cliente-pedido", "cliente-pedido@example.com")
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Bolsa checkout", preco=100.0, ativo=True)
+        cupom = Cupom(
+            codigo="FRETE",
+            descricao="Frete gratis",
+            tipo="frete",
+            valor=0.0,
+            validade=datetime.now(timezone.utc).date() + timedelta(days=1),
+            ativo=True,
+        )
+        db.add_all([produto, cupom])
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/pedidos",
+        json={
+            "itens": [{"produto_id": produto_id, "quantidade": 1}],
+            "endereco": {
+                "cep": "01001-000",
+                "rua": "Rua Teste",
+                "numero": "10",
+                "bairro": "Centro",
+                "cidade": "Sao Paulo",
+                "estado": "SP",
+            },
+            "forma_pagamento": "pix",
+            "frete": {"nome": "PAC", "prazo": "7 a 10 dias", "valor": 12.9},
+            "cupom_codigo": "FRETE",
+        },
+        headers=auth_headers("cliente-pedido"),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["subtotal"] == 100.0
+    assert body["valor_frete"] == 0.0
+    assert body["desconto_aplicado"] == 12.9
+    assert body["total"] == 100.0
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == body["numero_pedido"]).one()
+        assert pedido.subtotal == 100.0
+        assert pedido.valor_frete == 0.0
+        assert pedido.tipo_frete == "PAC"
+        assert pedido.prazo_frete == "7 a 10 dias"
+    finally:
+        db.close()
+
+
+def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
+    create_user("cliente-pix", "cliente-pix@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-pix").one()
+        pedido = Pedido(
+            numero="0000001",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="pix",
+            subtotal=50.0,
+            valor_frete=10.0,
+            total=60.0,
+        )
+        db.add(pedido)
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    creates = []
+
+    class FakePaymentResource:
+        def create(self, payload, *args):
+            creates.append(payload)
+            return {
+                "status": 201,
+                "response": {
+                    "id": "pay_pix_1",
+                    "status": "pending",
+                    "point_of_interaction": {
+                        "transaction_data": {
+                            "qr_code": "pix-copia-e-cola",
+                            "qr_code_base64": "base64",
+                        }
+                    },
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            self.token = token
+
+        def payment(self):
+            return FakePaymentResource()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "trigger_order_email_event", lambda *args, **kwargs: None)
+
+    headers = auth_headers("cliente-pix")
+    first = client.post("/api/v1/pagamentos/pix/0000001", headers=headers)
+    second = client.post("/api/v1/pagamentos/pix/0000001", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["payment_id"] == "pay_pix_1"
+    assert second.json()["payment_id"] == "pay_pix_1"
+    assert len(creates) == 1
+    assert creates[0]["transaction_amount"] == 60.0
+
+
+def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
+    create_user("cliente-webhook", "cliente-webhook@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-webhook").one()
+        pedido = Pedido(
+            numero="0000002",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="cartao",
+            subtotal=80.0,
+            valor_frete=15.0,
+            total=95.0,
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            Pagamento(
+                pedido_numero=pedido.numero,
+                tipo="checkout_pro",
+                valor=95.0,
+                mp_preference_id="pref_1",
+                status="pendente",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    class FakePaymentResource:
+        def get(self, payment_id):
+            assert payment_id == "pay_card_1"
+            return {
+                "status": 200,
+                "response": {
+                    "id": payment_id,
+                    "status": "approved",
+                    "external_reference": "0000002",
+                    "payment_method_id": "visa",
+                    "transaction_amount": 95.0,
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            self.token = token
+
+        def payment(self):
+            return FakePaymentResource()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "trigger_order_email_event", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/v1/pagamentos/webhook",
+        json={"type": "payment", "data": {"id": "pay_card_1"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000002").one()
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000002").one()
+        assert pedido.status == "Pago"
+        assert pagamento.status == "aprovado"
+        assert pagamento.mp_status == "approved"
+        assert pagamento.mp_payment_id == "pay_card_1"
+    finally:
+        db.close()
+
+
+def test_assinatura_webhook_fallback_valida_hmac():
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    secret = "segredo"
+    data_id = "123456"
+    request_id = "abc"
+    ts = "1704908010"
+    manifest = f"id:{data_id};request-id:{request_id};ts:{ts};"
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        manifest.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    assert pagamentos_module._validar_assinatura_fallback(
+        f"ts={ts},v1={signature}",
+        request_id,
+        data_id,
+        secret,
+    )
+    assert not pagamentos_module._validar_assinatura_fallback(
+        f"ts={ts},v1=invalida",
+        request_id,
+        data_id,
+        secret,
+    )

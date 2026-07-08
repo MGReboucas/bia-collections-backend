@@ -13,6 +13,10 @@ class Pedido(Base):
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
     status = Column(String(50), default="Aguardando pagamento")
     forma_pagamento = Column(String(50), nullable=False)
+    subtotal = Column(Float, nullable=True)
+    valor_frete = Column(Float, nullable=False, default=0.0)
+    tipo_frete = Column(String(50), nullable=True)
+    prazo_frete = Column(String(100), nullable=True)
     total = Column(Float, nullable=False)
     # Endereço snapshot
     endereco_cep = Column(String(20))

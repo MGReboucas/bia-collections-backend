@@ -51,6 +51,8 @@ services:
         sync: false
       - key: MP_NOTIFICATION_URL
         sync: false
+      - key: MP_WEBHOOK_SECRET
+        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: CLOUDINARY_CLOUD_NAME

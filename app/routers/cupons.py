@@ -131,7 +131,7 @@ def validar_cupom(
         valor_desconto = min(cupom.valor, data.total_pedido)
         mensagem = f"Cupom aplicado: {formatar_preco(cupom.valor)} de desconto"
     elif cupom.tipo == "frete":
-        valor_desconto = 0.0
+        valor_desconto = max(data.valor_frete, 0.0)
         mensagem = "Cupom aplicado: Frete grátis"
     else:
         valor_desconto = 0.0

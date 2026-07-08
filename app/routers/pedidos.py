@@ -21,9 +21,16 @@ from app.schemas.pedido import (
 )
 from app.services.pedido_service import gerar_numero_pedido
 from app.services.frete_service import formatar_preco
+from app.services.payment_status import ORDER_STATUS_AGUARDANDO
 from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(prefix="/pedidos", tags=["pedidos"])
+
+
+def _subtotal_pedido(pedido: Pedido) -> float:
+    if pedido.subtotal is not None:
+        return pedido.subtotal
+    return max((pedido.total or 0.0) - (pedido.valor_frete or 0.0), 0.0)
 
 
 @router.post("", response_model=CriarPedidoResponse, status_code=status.HTTP_201_CREATED)
@@ -32,8 +39,8 @@ def criar_pedido(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
-    # Validate products and compute total
-    total = 0.0
+    # Validate products and compute subtotal
+    subtotal = 0.0
     itens_data = []
     for item in data.itens:
         produto = db.query(Produto).filter(
@@ -44,7 +51,7 @@ def criar_pedido(
                 status_code=404,
                 detail=f"Produto {item.produto_id} não encontrado.",
             )
-        total += produto.preco * item.quantidade
+        subtotal += produto.preco * item.quantidade
         itens_data.append(
             {
                 "produto": produto,
@@ -55,8 +62,15 @@ def criar_pedido(
             }
         )
 
+    subtotal = round(subtotal, 2)
+    frete = data.frete
+    valor_frete_original = round(frete.valor if frete else 0.0, 2)
+    tipo_frete = frete.nome.strip() if frete and frete.nome else None
+    prazo_frete = frete.prazo.strip() if frete and frete.prazo else None
+
     # Apply coupon
-    desconto = 0.0
+    desconto_produtos = 0.0
+    desconto_frete = 0.0
     cupom_codigo_aplicado: str | None = None
 
     if data.cupom_codigo:
@@ -68,7 +82,7 @@ def criar_pedido(
             raise HTTPException(status_code=422, detail="Cupom inválido ou inativo.")
         if cupom.validade < date.today():
             raise HTTPException(status_code=422, detail="Cupom expirado.")
-        if total < cupom.valor_minimo_pedido:
+        if subtotal < cupom.valor_minimo_pedido:
             raise HTTPException(
                 status_code=422,
                 detail=f"Pedido mínimo de {formatar_preco(cupom.valor_minimo_pedido)} para este cupom.",
@@ -84,21 +98,28 @@ def criar_pedido(
             raise HTTPException(status_code=422, detail="Cupom esgotado.")
 
         if cupom.tipo == "porcentagem":
-            desconto = round(total * (cupom.valor / 100), 2)
+            desconto_produtos = round(subtotal * (cupom.valor / 100), 2)
         elif cupom.tipo == "valor":
-            desconto = min(cupom.valor, total)
-        # tipo == 'frete': desconto no frete, não no total do produto
+            desconto_produtos = min(cupom.valor, subtotal)
+        elif cupom.tipo == "frete":
+            desconto_frete = valor_frete_original
         cupom_codigo_aplicado = cupom.codigo
 
-    total_final = round(total - desconto, 2)
+    valor_frete_cobrado = round(max(valor_frete_original - desconto_frete, 0.0), 2)
+    desconto = round(desconto_produtos + desconto_frete, 2)
+    total_final = round(max(subtotal - desconto_produtos, 0.0) + valor_frete_cobrado, 2)
 
     # Create order
     numero = gerar_numero_pedido(db)
     pedido = Pedido(
         numero=numero,
         usuario_id=current_user.id,
-        status="Aguardando pagamento",
+        status=ORDER_STATUS_AGUARDANDO,
         forma_pagamento=data.forma_pagamento,
+        subtotal=subtotal,
+        valor_frete=valor_frete_cobrado,
+        tipo_frete=tipo_frete,
+        prazo_frete=prazo_frete,
         total=total_final,
         endereco_cep=data.endereco.cep,
         endereco_rua=data.endereco.rua,
@@ -144,8 +165,11 @@ def criar_pedido(
 
     return CriarPedidoResponse(
         numero_pedido=pedido.numero,
+        subtotal=pedido.subtotal or 0.0,
         total=pedido.total,
         total_formatado=formatar_preco(pedido.total),
+        valor_frete=pedido.valor_frete or 0.0,
+        valor_frete_formatado=formatar_preco(pedido.valor_frete or 0.0),
         desconto_aplicado=desconto,
         forma_pagamento=pedido.forma_pagamento,
         status=pedido.status,
@@ -219,8 +243,13 @@ def detalhe_pedido(
         data=pedido.criado_em.strftime("%d/%m/%Y"),
         status=pedido.status,
         forma_pagamento=pedido.forma_pagamento,
+        subtotal=_subtotal_pedido(pedido),
         total=pedido.total,
         total_formatado=formatar_preco(pedido.total),
+        valor_frete=pedido.valor_frete or 0.0,
+        valor_frete_formatado=formatar_preco(pedido.valor_frete or 0.0),
+        tipo_frete=pedido.tipo_frete,
+        prazo_frete=pedido.prazo_frete,
         desconto_aplicado=pedido.desconto_aplicado,
         endereco=endereco,
         itens=itens,

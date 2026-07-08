@@ -30,6 +30,7 @@ from app.models.usuario import Usuario
 from app.schemas.duvida import DuvidaOut
 from app.schemas.pedido import PedidoListItem
 from app.services.frete_service import formatar_preco
+from app.services.payment_status import ORDER_STATUSES, ORDER_STATUS_EMAIL_EVENTS
 from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(
@@ -38,21 +39,6 @@ router = APIRouter(
     dependencies=[Depends(get_current_master_admin_user)],
 )
 
-ORDER_STATUSES = {
-    "Aguardando pagamento",
-    "Pago",
-    "Preparando",
-    "Enviado",
-    "Entregue",
-    "Cancelado",
-}
-ORDER_STATUS_EMAIL_EVENTS = {
-    "Pago": "payment_approved",
-    "Preparando": "order_preparing",
-    "Enviado": "order_shipped",
-    "Entregue": "order_delivered",
-    "Cancelado": "order_cancelled",
-}
 MAX_PRODUCT_IMAGES = 8
 PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
 
@@ -449,6 +435,12 @@ def detalhe_pedido_admin(
         "data": pedido.criado_em.isoformat() if pedido.criado_em else "",
         "status": pedido.status,
         "forma_pagamento": pedido.forma_pagamento,
+        "subtotal": pedido.subtotal if pedido.subtotal is not None else pedido.total,
+        "subtotal_formatado": formatar_preco(pedido.subtotal if pedido.subtotal is not None else pedido.total),
+        "valor_frete": pedido.valor_frete or 0.0,
+        "valor_frete_formatado": formatar_preco(pedido.valor_frete or 0.0),
+        "tipo_frete": pedido.tipo_frete,
+        "prazo_frete": pedido.prazo_frete,
         "total": pedido.total,
         "total_formatado": formatar_preco(pedido.total),
         "desconto_aplicado": pedido.desconto_aplicado,

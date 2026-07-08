@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     MP_ACCESS_TOKEN: str = ""
     # URL pública do backend para receber webhooks do MP (ex: https://api.seusite.com)
     MP_NOTIFICATION_URL: str = ""
+    MP_WEBHOOK_SECRET: str = ""
     # URL pública do frontend (ex: https://seusite.com ou https://seusite.vercel.app)
     FRONTEND_URL: str = "http://localhost:3000"
 

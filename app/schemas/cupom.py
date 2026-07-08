@@ -27,6 +27,7 @@ class CuponsResponse(BaseModel):
 class ValidarCupomRequest(BaseModel):
     codigo: str
     total_pedido: float
+    valor_frete: float = 0.0
 
 
 class ValidarCupomResponse(BaseModel):

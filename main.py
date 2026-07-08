@@ -37,6 +37,41 @@ if "codigo_rastreio" not in _pedidos_cols:
     with engine.connect() as _conn:
         _conn.execute(text("ALTER TABLE pedidos ADD COLUMN codigo_rastreio VARCHAR(100)"))
         _conn.commit()
+for _column_name, _definition in {
+    "subtotal": "FLOAT",
+    "valor_frete": "FLOAT NOT NULL DEFAULT 0",
+    "tipo_frete": "VARCHAR(50)",
+    "prazo_frete": "VARCHAR(100)",
+}.items():
+    if _column_name not in _pedidos_cols:
+        with engine.connect() as _conn:
+            _conn.execute(text(f"ALTER TABLE pedidos ADD COLUMN {_column_name} {_definition}"))
+            if _column_name == "subtotal":
+                _conn.execute(text("UPDATE pedidos SET subtotal = total WHERE subtotal IS NULL"))
+            _conn.commit()
+
+if "pagamentos" in set(inspect(engine).get_table_names()):
+    _pagamentos_cols = {col["name"] for col in inspect(engine).get_columns("pagamentos")}
+    for _column_name, _definition in {
+        "tipo": "VARCHAR(30) NOT NULL DEFAULT 'pix'",
+        "valor": "FLOAT",
+        "idempotency_key": "VARCHAR(120)",
+        "mp_status": "VARCHAR(50)",
+    }.items():
+        if _column_name not in _pagamentos_cols:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE pagamentos ADD COLUMN {_column_name} {_definition}"))
+                if _column_name == "tipo":
+                    _conn.execute(
+                        text(
+                            """
+                            UPDATE pagamentos
+                            SET tipo = 'checkout_pro'
+                            WHERE mp_preference_id IS NOT NULL
+                            """
+                        )
+                    )
+                _conn.commit()
 
 _cupons_cols = {col["name"] for col in inspect(engine).get_columns("cupons")}
 if "max_usos" not in _cupons_cols:
