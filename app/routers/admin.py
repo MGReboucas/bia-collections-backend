@@ -152,6 +152,68 @@ def _split_csv(value: Optional[str]) -> str:
     return json.dumps(items, ensure_ascii=False)
 
 
+def _clean_optional_text(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_indexed_text_list(value: Optional[str]) -> list[str | None]:
+    if not value:
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [_clean_optional_text(item) for item in parsed]
+    return [_clean_optional_text(item) for item in raw.split(",")]
+
+
+def _first_indexed_value(values: list[str | None], index: int) -> str | None:
+    if index >= len(values):
+        return None
+    return values[index]
+
+
+def _image_metadata(
+    *,
+    modelos: Optional[str] = None,
+    modelos_nomes: Optional[str] = None,
+    modelo_cores: Optional[str] = None,
+    cores_nomes: Optional[str] = None,
+) -> list[dict[str, str | None]]:
+    modelo_values = _parse_indexed_text_list(modelos)
+    modelo_nome_values = _parse_indexed_text_list(modelos_nomes)
+    modelo_cor_values = _parse_indexed_text_list(modelo_cores)
+    cor_nome_values = _parse_indexed_text_list(cores_nomes)
+    total = max(
+        len(modelo_values),
+        len(modelo_nome_values),
+        len(modelo_cor_values),
+        len(cor_nome_values),
+        0,
+    )
+    return [
+        {
+            "modelo_nome": _first_indexed_value(modelo_nome_values, index)
+            or _first_indexed_value(modelo_values, index),
+            "modelo_cor": _first_indexed_value(modelo_cor_values, index),
+            "cor_nome": _first_indexed_value(cor_nome_values, index),
+        }
+        for index in range(total)
+    ]
+
+
+def _has_image_metadata(metadata: list[dict[str, str | None]]) -> bool:
+    return any(any(value is not None for value in item.values()) for item in metadata)
+
+
 def _uploaded_files(files: List[UploadFile] | None) -> List[UploadFile]:
     return [file for file in files or [] if file and file.filename]
 
@@ -204,15 +266,42 @@ async def _save_product_images(files: List[UploadFile]) -> List[str]:
     return urls
 
 
-def _build_product_image_models(image_urls: List[str]) -> List[ProdutoImagem]:
+def _build_product_image_models(
+    image_urls: List[str],
+    metadata: list[dict[str, str | None]] | None = None,
+) -> List[ProdutoImagem]:
+    metadata = metadata or []
     return [
         ProdutoImagem(
             imagem_url=image_url,
             ordem=index,
             principal=index == 0,
+            modelo_nome=(metadata[index].get("modelo_nome") if index < len(metadata) else None),
+            modelo_cor=(metadata[index].get("modelo_cor") if index < len(metadata) else None),
+            cor_nome=(metadata[index].get("cor_nome") if index < len(metadata) else None),
         )
         for index, image_url in enumerate(image_urls)
     ]
+
+
+def _apply_product_image_metadata(
+    produto: Produto,
+    metadata: list[dict[str, str | None]],
+) -> None:
+    imagens = sorted(
+        produto.imagens or [],
+        key=lambda imagem: (
+            not bool(imagem.principal),
+            imagem.ordem if imagem.ordem is not None else 0,
+            imagem.id or 0,
+        ),
+    )
+    for index, imagem in enumerate(imagens):
+        if index >= len(metadata):
+            break
+        imagem.modelo_nome = metadata[index].get("modelo_nome")
+        imagem.modelo_cor = metadata[index].get("modelo_cor")
+        imagem.cor_nome = metadata[index].get("cor_nome")
 
 
 def _produto_imagens_response(produto: Produto) -> list[dict]:
@@ -230,6 +319,11 @@ def _produto_imagens_response(produto: Produto) -> list[dict]:
             "imagem_url": imagem.imagem_url,
             "ordem": imagem.ordem,
             "principal": imagem.principal,
+            "modelo_nome": imagem.modelo_nome,
+            "modelo_cor": imagem.modelo_cor,
+            "cor_nome": imagem.cor_nome,
+            "modelo": imagem.modelo_nome,
+            "cor": imagem.cor_nome or imagem.modelo_cor,
         }
         for imagem in imagens
     ]
@@ -709,11 +803,21 @@ async def criar_produto(
     ativo: bool = Form(True),
     imagem: UploadFile | None = File(None),
     imagens: List[UploadFile] | None = File(None),
+    modelos: Optional[str] = Form(None),
+    modelos_nomes: Optional[str] = Form(None),
+    modelo_cores: Optional[str] = Form(None),
+    cores_nomes: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
     image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
     image_urls = await _save_product_images(image_files)
+    image_metadata = _image_metadata(
+        modelos=modelos,
+        modelos_nomes=modelos_nomes,
+        modelo_cores=modelo_cores,
+        cores_nomes=cores_nomes,
+    )
     produto = Produto(
         nome=nome.strip(),
         descricao=descricao.strip() or None,
@@ -722,7 +826,7 @@ async def criar_produto(
         estoque=estoque,
         categoria_id=int(categoria_id) if categoria_id else None,
         imagem_url=image_urls[0] if image_urls else None,
-        imagens=_build_product_image_models(image_urls),
+        imagens=_build_product_image_models(image_urls, image_metadata),
         tamanhos=_split_csv(tamanhos),
         cores=_split_csv(cores),
         ativo=ativo,
@@ -747,6 +851,10 @@ async def atualizar_produto(
     ativo: bool = Form(True),
     imagem: UploadFile | None = File(None),
     imagens: List[UploadFile] | None = File(None),
+    modelos: Optional[str] = Form(None),
+    modelos_nomes: Optional[str] = Form(None),
+    modelo_cores: Optional[str] = Form(None),
+    cores_nomes: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
@@ -762,6 +870,12 @@ async def atualizar_produto(
     image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
     old_image_urls = _product_image_urls(produto) if image_files else set()
     image_urls = await _save_product_images(image_files) if image_files else []
+    image_metadata = _image_metadata(
+        modelos=modelos,
+        modelos_nomes=modelos_nomes,
+        modelo_cores=modelo_cores,
+        cores_nomes=cores_nomes,
+    )
 
     produto.nome = nome.strip()
     produto.descricao = descricao.strip() or None
@@ -773,8 +887,10 @@ async def atualizar_produto(
     produto.cores = _split_csv(cores)
     produto.ativo = ativo
     if image_files:
-        produto.imagens = _build_product_image_models(image_urls)
+        produto.imagens = _build_product_image_models(image_urls, image_metadata)
         produto.imagem_url = image_urls[0] if image_urls else None
+    elif _has_image_metadata(image_metadata):
+        _apply_product_image_metadata(produto, image_metadata)
 
     db.commit()
     db.refresh(produto)

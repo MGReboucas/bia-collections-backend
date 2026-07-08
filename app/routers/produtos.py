@@ -28,6 +28,11 @@ def _produto_imagens_response(produto: Produto) -> list[dict]:
             "imagem_url": imagem.imagem_url,
             "ordem": imagem.ordem,
             "principal": imagem.principal,
+            "modelo_nome": imagem.modelo_nome,
+            "modelo_cor": imagem.modelo_cor,
+            "cor_nome": imagem.cor_nome,
+            "modelo": imagem.modelo_nome,
+            "cor": imagem.cor_nome or imagem.modelo_cor,
         }
         for imagem in imagens
     ]

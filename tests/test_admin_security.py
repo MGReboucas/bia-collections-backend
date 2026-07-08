@@ -634,6 +634,9 @@ def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
             "estoque": "7",
             "tamanhos": "P,M",
             "cores": "Preto,Branco",
+            "modelos_nomes": '["Preto","Branco","Caramelo"]',
+            "modelo_cores": "Preto, Branco, Caramelo",
+            "cores_nomes": "Preto,Branco,Caramelo",
             "ativo": "true",
         },
         files=[
@@ -655,6 +658,11 @@ def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
     ]
     assert [imagem["ordem"] for imagem in body["imagens"]] == [0, 1, 2]
     assert [imagem["principal"] for imagem in body["imagens"]] == [True, False, False]
+    assert [imagem["modelo_nome"] for imagem in body["imagens"]] == ["Preto", "Branco", "Caramelo"]
+    assert [imagem["modelo_cor"] for imagem in body["imagens"]] == ["Preto", "Branco", "Caramelo"]
+    assert [imagem["cor_nome"] for imagem in body["imagens"]] == ["Preto", "Branco", "Caramelo"]
+    assert [imagem["modelo"] for imagem in body["imagens"]] == ["Preto", "Branco", "Caramelo"]
+    assert [imagem["cor"] for imagem in body["imagens"]] == ["Preto", "Branco", "Caramelo"]
 
     produtos_admin = client.get("/api/v1/admin/produtos", headers=auth_headers("master"))
     assert produtos_admin.status_code == 200
@@ -717,6 +725,9 @@ def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client
             "nome": "Bolsa nova",
             "descricao": "Galeria nova",
             "preco": "219.9",
+            "modelos": "Preto,Caramelo",
+            "modelo_cores": '["Preto","Caramelo"]',
+            "cores_nomes": '["Preto","Caramelo"]',
             "ativo": "true",
         },
         files=[
@@ -733,6 +744,9 @@ def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client
         "/uploads/produtos/nova-capa.webp",
         "/uploads/produtos/nova-detalhe.png",
     ]
+    assert [imagem["modelo_nome"] for imagem in body["imagens"]] == ["Preto", "Caramelo"]
+    assert [imagem["modelo_cor"] for imagem in body["imagens"]] == ["Preto", "Caramelo"]
+    assert [imagem["cor_nome"] for imagem in body["imagens"]] == ["Preto", "Caramelo"]
     assert set(removed) == {
         "/uploads/produtos/antiga-capa.webp",
         "/uploads/produtos/antigo-detalhe.webp",
@@ -746,6 +760,9 @@ def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client
             "/uploads/produtos/nova-capa.webp",
             "/uploads/produtos/nova-detalhe.png",
         ]
+        assert [imagem.modelo_nome for imagem in produto.imagens] == ["Preto", "Caramelo"]
+        assert [imagem.modelo_cor for imagem in produto.imagens] == ["Preto", "Caramelo"]
+        assert [imagem.cor_nome for imagem in produto.imagens] == ["Preto", "Caramelo"]
     finally:
         db.close()
 
@@ -800,6 +817,11 @@ def test_master_admin_atualiza_produto_sem_imagens_mantem_galeria(client, monkey
     assert [imagem["imagem_url"] for imagem in body["imagens"]] == [
         "/uploads/produtos/capa.webp"
     ]
+    assert body["imagens"][0]["modelo_nome"] is None
+    assert body["imagens"][0]["modelo_cor"] is None
+    assert body["imagens"][0]["cor_nome"] is None
+    assert body["imagens"][0]["modelo"] is None
+    assert body["imagens"][0]["cor"] is None
 
 
 def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypatch):

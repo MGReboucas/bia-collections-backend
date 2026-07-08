@@ -10,7 +10,7 @@ from app.dependencies import get_current_user
 from app.models.usuario import Usuario
 from app.models.produto import Produto
 from app.models.pedido import Pedido, ItemPedido
-from app.models.cupom import Cupom
+from app.models.cupom import Cupom, CupomUsado
 from app.schemas.pedido import (
     CriarPedidoRequest,
     CriarPedidoResponse,

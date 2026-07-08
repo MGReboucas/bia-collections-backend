@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 
 
@@ -7,6 +7,19 @@ class ProdutoImagemOut(BaseModel):
     imagem_url: str
     ordem: int
     principal: bool
+    modelo_nome: Optional[str] = None
+    modelo_cor: Optional[str] = None
+    cor_nome: Optional[str] = None
+    modelo: Optional[str] = None
+    cor: Optional[str] = None
+
+    @model_validator(mode="after")
+    def preencher_aliases(self):
+        if self.modelo is None:
+            self.modelo = self.modelo_nome
+        if self.cor is None:
+            self.cor = self.cor_nome or self.modelo_cor
+        return self
 
     model_config = {"from_attributes": True}
 

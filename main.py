@@ -94,6 +94,13 @@ if "estoque" not in _produtos_cols:
         _conn.commit()
 
 if "produto_imagens" in set(inspect(engine).get_table_names()):
+    _produto_imagens_cols = {col["name"] for col in inspect(engine).get_columns("produto_imagens")}
+    for _column_name in ("modelo_nome", "modelo_cor", "cor_nome"):
+        if _column_name not in _produto_imagens_cols:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE produto_imagens ADD COLUMN {_column_name} VARCHAR(120)"))
+                _conn.commit()
+
     with engine.begin() as _conn:
         _conn.execute(
             text(

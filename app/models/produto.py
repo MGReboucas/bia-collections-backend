@@ -54,6 +54,9 @@ class ProdutoImagem(Base):
     imagem_url = Column(String(500), nullable=False)
     ordem = Column(Integer, nullable=False, default=0)
     principal = Column(Boolean, nullable=False, default=False)
+    modelo_nome = Column(String(120), nullable=True)
+    modelo_cor = Column(String(120), nullable=True)
+    cor_nome = Column(String(120), nullable=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
 
     produto = relationship("Produto", back_populates="imagens")
