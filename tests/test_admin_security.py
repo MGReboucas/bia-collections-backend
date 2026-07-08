@@ -1026,6 +1026,56 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
         db.close()
 
 
+def test_criar_pedido_usa_preco_promocional_quando_existir(client):
+    create_user("cliente-promo", "cliente-promo@example.com")
+    db = SessionLocal()
+    try:
+        produto = Produto(
+            nome="Bolsa promo",
+            preco=149.9,
+            preco_promocional=1.5,
+            ativo=True,
+        )
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/pedidos",
+        json={
+            "itens": [{"produto_id": produto_id, "quantidade": 2}],
+            "endereco": {
+                "cep": "01001-000",
+                "rua": "Rua Teste",
+                "numero": "10",
+                "bairro": "Centro",
+                "cidade": "Sao Paulo",
+                "estado": "SP",
+            },
+            "forma_pagamento": "pix",
+            "frete": {"nome": "PAC", "prazo": "7 a 10 dias", "valor": 26.9},
+        },
+        headers=auth_headers("cliente-promo"),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["subtotal"] == 3.0
+    assert body["valor_frete"] == 26.9
+    assert body["total"] == pytest.approx(29.9)
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == body["numero_pedido"]).one()
+        assert pedido.subtotal == 3.0
+        assert pedido.total == pytest.approx(29.9)
+        assert pedido.itens[0].preco_unitario == 1.5
+    finally:
+        db.close()
+
+
 def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     create_user("cliente-pix", "cliente-pix@example.com")
     db = SessionLocal()

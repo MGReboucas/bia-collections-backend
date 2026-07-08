@@ -33,6 +33,12 @@ def _subtotal_pedido(pedido: Pedido) -> float:
     return max((pedido.total or 0.0) - (pedido.valor_frete or 0.0), 0.0)
 
 
+def _preco_venda(produto: Produto) -> float:
+    if produto.preco_promocional is not None and produto.preco_promocional > 0:
+        return produto.preco_promocional
+    return produto.preco
+
+
 @router.post("", response_model=CriarPedidoResponse, status_code=status.HTTP_201_CREATED)
 def criar_pedido(
     data: CriarPedidoRequest,
@@ -51,14 +57,15 @@ def criar_pedido(
                 status_code=404,
                 detail=f"Produto {item.produto_id} não encontrado.",
             )
-        subtotal += produto.preco * item.quantidade
+        preco_unitario = _preco_venda(produto)
+        subtotal += preco_unitario * item.quantidade
         itens_data.append(
             {
                 "produto": produto,
                 "quantidade": item.quantidade,
                 "tamanho": item.tamanho,
                 "cor": item.cor,
-                "preco_unitario": produto.preco,
+                "preco_unitario": preco_unitario,
             }
         )
 
