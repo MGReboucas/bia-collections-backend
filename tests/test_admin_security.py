@@ -617,6 +617,126 @@ def test_master_admin_cria_categoria_com_upload_de_imagem(client, monkeypatch):
     ]
 
 
+def test_master_admin_atualiza_categoria_sem_imagem_mantem_imagem(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        categoria = Categoria(nome="Bolsas", imagem_url="/uploads/categorias/bolsas.webp")
+        db.add(categoria)
+        db.commit()
+        categoria_id = categoria.id
+    finally:
+        db.close()
+
+    async def fail_upload_image(file, folder):
+        raise AssertionError("Upload nao deve ser chamado sem nova imagem")
+
+    def fail_delete_old_image(url):
+        raise AssertionError("Imagem antiga nao deve ser removida sem substituicao")
+
+    monkeypatch.setattr(admin_module, "upload_image", fail_upload_image)
+    monkeypatch.setattr(admin_module, "delete_old_image", fail_delete_old_image)
+
+    response = client.put(
+        f"/api/v1/admin/categorias/{categoria_id}",
+        data={"nome": "Bolsas Premium"},
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": categoria_id,
+        "nome": "Bolsas Premium",
+        "imagem_url": "/uploads/categorias/bolsas.webp",
+    }
+
+    categorias = client.get("/api/v1/categorias")
+    assert categorias.status_code == 200
+    assert categorias.json() == [
+        {
+            "id": categoria_id,
+            "nome": "Bolsas Premium",
+            "imagem_url": "/uploads/categorias/bolsas.webp",
+        }
+    ]
+
+
+def test_master_admin_atualiza_categoria_com_upload_remove_imagem_antiga(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        categoria = Categoria(nome="Vestidos", imagem_url="/uploads/categorias/antiga.webp")
+        db.add(categoria)
+        db.commit()
+        categoria_id = categoria.id
+    finally:
+        db.close()
+
+    async def fake_upload_image(file, folder):
+        assert file.filename == "vestidos.png"
+        assert folder == "bia-collections/categorias"
+        return "/uploads/categorias/nova.png"
+
+    removed = []
+
+    def fake_delete_old_image(url):
+        removed.append(url)
+
+    monkeypatch.setattr(admin_module, "upload_image", fake_upload_image)
+    monkeypatch.setattr(admin_module, "delete_old_image", fake_delete_old_image)
+
+    response = client.put(
+        f"/api/v1/admin/categorias/{categoria_id}",
+        data={"nome": "Vestidos Festa"},
+        files={"imagem": ("vestidos.png", b"fake image", "image/png")},
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": categoria_id,
+        "nome": "Vestidos Festa",
+        "imagem_url": "/uploads/categorias/nova.png",
+    }
+    assert removed == ["/uploads/categorias/antiga.webp"]
+
+
+def test_master_admin_atualiza_categoria_valida_duplicidade_e_existencia(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        bolsas = Categoria(nome="Bolsas")
+        vestidos = Categoria(nome="Vestidos")
+        db.add_all([bolsas, vestidos])
+        db.commit()
+        bolsas_id = bolsas.id
+        vestidos_id = vestidos.id
+    finally:
+        db.close()
+
+    headers = auth_headers("master")
+    duplicate = client.put(
+        f"/api/v1/admin/categorias/{bolsas_id}",
+        data={"nome": "vestidos"},
+        headers=headers,
+    )
+    missing = client.put(
+        "/api/v1/admin/categorias/999999",
+        data={"nome": "Nova"},
+        headers=headers,
+    )
+    same_name = client.put(
+        f"/api/v1/admin/categorias/{vestidos_id}",
+        data={"nome": "Vestidos"},
+        headers=headers,
+    )
+
+    assert duplicate.status_code == 409
+    assert missing.status_code == 404
+    assert same_name.status_code == 200
+    assert same_name.json()["nome"] == "Vestidos"
+
+
 def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
 

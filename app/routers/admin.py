@@ -953,6 +953,50 @@ async def criar_categoria(
     return _categoria_response(categoria)
 
 
+@router.put("/categorias/{categoria_id}")
+async def atualizar_categoria(
+    categoria_id: int,
+    nome: str = Form(...),
+    imagem: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    categoria = db.query(Categoria).filter(Categoria.id == categoria_id).first()
+    if not categoria:
+        raise HTTPException(status_code=404, detail="Categoria nao encontrada.")
+
+    try:
+        data = CategoriaPayload(nome=nome)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Nome da categoria muito curto.") from exc
+
+    exists = (
+        db.query(Categoria)
+        .filter(
+            func.lower(Categoria.nome) == data.nome.lower(),
+            Categoria.id != categoria_id,
+        )
+        .first()
+    )
+    if exists:
+        raise HTTPException(status_code=409, detail="Categoria ja cadastrada.")
+
+    old_image_url = categoria.imagem_url
+    new_image_url = await _save_category_image(imagem)
+
+    categoria.nome = data.nome
+    if new_image_url:
+        categoria.imagem_url = new_image_url
+
+    db.commit()
+    db.refresh(categoria)
+
+    if new_image_url and old_image_url and old_image_url != new_image_url:
+        delete_old_image(old_image_url)
+
+    return _categoria_response(categoria)
+
+
 @router.delete("/categorias/{categoria_id}", status_code=status.HTTP_204_NO_CONTENT)
 def deletar_categoria(
     categoria_id: int,
