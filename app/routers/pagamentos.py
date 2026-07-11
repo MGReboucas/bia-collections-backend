@@ -17,6 +17,7 @@ from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.modules.email.service import trigger_order_email_event
+from app.services.cupom_service import reservar_uso_cupom
 from app.services.payment_status import (
     MP_TO_ORDER_STATUS,
     MP_TO_PAYMENT_STATUS,
@@ -369,6 +370,7 @@ def _registrar_cupom_pagamento_aprovado(db: Session, pedido: Pedido) -> None:
     )
     if ja_registrado:
         return
+    reservar_uso_cupom(db, cupom)
     db.add(
         CupomUsado(
             cupom_id=cupom.id,
@@ -376,7 +378,6 @@ def _registrar_cupom_pagamento_aprovado(db: Session, pedido: Pedido) -> None:
             pedido_id=pedido.id,
         )
     )
-    cupom.total_usos = (cupom.total_usos or 0) + 1
 
 
 @router.post("/pix/{numero_pedido}")

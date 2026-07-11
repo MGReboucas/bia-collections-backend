@@ -1,7 +1,4 @@
-from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 
@@ -10,7 +7,7 @@ from app.dependencies import get_current_user
 from app.models.usuario import Usuario
 from app.models.produto import Produto
 from app.models.pedido import Pedido, ItemPedido
-from app.models.cupom import Cupom, CupomUsado
+from app.models.cupom import Cupom
 from app.schemas.pedido import (
     CriarPedidoRequest,
     CriarPedidoResponse,
@@ -18,6 +15,9 @@ from app.schemas.pedido import (
     PedidoDetalhe,
     EnderecoSnapshot,
     ItemPedidoDetalhe,
+)
+from app.services.cupom_service import (
+    validar_cupom_para_total,
 )
 from app.services.pedido_service import gerar_numero_pedido
 from app.services.frete_service import formatar_preco
@@ -44,7 +44,6 @@ def criar_pedido(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
-    # Validate products and compute subtotal
     subtotal = 0.0
     itens_data = []
     for item in data.itens:
@@ -54,7 +53,7 @@ def criar_pedido(
         if not produto:
             raise HTTPException(
                 status_code=404,
-                detail=f"Produto {item.produto_id} não encontrado.",
+                detail=f"Produto {item.produto_id} nao encontrado.",
             )
         preco_unitario = _preco_venda(produto)
         subtotal += preco_unitario * item.quantidade
@@ -73,49 +72,31 @@ def criar_pedido(
     valor_frete_original = round(frete.valor if frete else 0.0, 2)
     tipo_frete = frete.nome.strip() if frete and frete.nome else None
     prazo_frete = frete.prazo.strip() if frete and frete.prazo else None
+    total_antes_desconto = round(subtotal + valor_frete_original, 2)
 
-    # Apply coupon
     desconto_produtos = 0.0
     desconto_frete = 0.0
     cupom_codigo_aplicado: str | None = None
+    cupom_aplicado: Cupom | None = None
 
     if data.cupom_codigo:
-        cupom = db.query(Cupom).filter(
-            Cupom.codigo == data.cupom_codigo.upper(),
-            Cupom.ativo.is_(True),
-        ).first()
-        if not cupom:
-            raise HTTPException(status_code=422, detail="Cupom inválido ou inativo.")
-        if cupom.validade < date.today():
-            raise HTTPException(status_code=422, detail="Cupom expirado.")
-        if subtotal < cupom.valor_minimo_pedido:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Pedido mínimo de {formatar_preco(cupom.valor_minimo_pedido)} para este cupom.",
-            )
-        ja_usado = db.query(CupomUsado).filter(
-            CupomUsado.cupom_id == cupom.id,
-            CupomUsado.usuario_id == current_user.id,
-        ).first()
-        if ja_usado:
-            raise HTTPException(status_code=422, detail="Cupom já utilizado.")
-
-        if cupom.max_usos is not None and cupom.total_usos >= cupom.max_usos:
-            raise HTTPException(status_code=422, detail="Cupom esgotado.")
-
-        if cupom.tipo == "porcentagem":
-            desconto_produtos = round(subtotal * (cupom.valor / 100), 2)
-        elif cupom.tipo == "valor":
-            desconto_produtos = min(cupom.valor, subtotal)
-        elif cupom.tipo == "frete":
-            desconto_frete = valor_frete_original
-        cupom_codigo_aplicado = cupom.codigo
+        cupom_aplicado, valor_desconto = validar_cupom_para_total(
+            db=db,
+            usuario=current_user,
+            codigo=data.cupom_codigo,
+            total=total_antes_desconto,
+            valor_frete=valor_frete_original,
+        )
+        if cupom_aplicado.tipo == "frete":
+            desconto_frete = valor_desconto
+        else:
+            desconto_produtos = valor_desconto
+        cupom_codigo_aplicado = cupom_aplicado.codigo
 
     valor_frete_cobrado = round(max(valor_frete_original - desconto_frete, 0.0), 2)
     desconto = round(desconto_produtos + desconto_frete, 2)
-    total_final = round(max(subtotal - desconto_produtos, 0.0) + valor_frete_cobrado, 2)
+    total_final = round(max(total_antes_desconto - desconto, 0.0), 2)
 
-    # Create order
     numero = gerar_numero_pedido(db)
     pedido = Pedido(
         numero=numero,
@@ -138,7 +119,7 @@ def criar_pedido(
         desconto_aplicado=desconto,
     )
     db.add(pedido)
-    db.flush()  # get pedido.id before commit
+    db.flush()
 
     for item in itens_data:
         db.add(
@@ -209,7 +190,7 @@ def detalhe_pedido(
         Pedido.usuario_id == current_user.id,
     ).first()
     if not pedido:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado.")
+        raise HTTPException(status_code=404, detail="Pedido nao encontrado.")
 
     endereco = EnderecoSnapshot(
         cep=pedido.endereco_cep,

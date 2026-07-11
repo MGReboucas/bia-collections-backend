@@ -1,6 +1,4 @@
-from datetime import date
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 
@@ -15,23 +13,22 @@ from app.schemas.cupom import (
     CupomAtivo,
     CupomUsadoResponse,
 )
+from app.services.cupom_service import (
+    descricao_desconto,
+    hoje_sao_paulo,
+    resposta_validacao_invalida,
+    validar_cupom_para_total,
+)
 from app.services.frete_service import formatar_preco
 
 router = APIRouter(prefix="/cupons", tags=["cupons"])
-
-
-def _formatar_validade(cupom: Cupom) -> str:
-    hoje = date.today()
-    if cupom.validade < hoje:
-        return f"Expirou em {cupom.validade.strftime('%d/%m/%Y')}"
-    return f"Válido até {cupom.validade.strftime('%d/%m/%Y')}"
 
 
 def _formatar_valor_cupom(cupom: Cupom) -> str:
     if cupom.tipo == "porcentagem":
         return f"{int(cupom.valor)}%"
     if cupom.tipo == "frete":
-        return "Frete grátis"
+        return "Frete gratis"
     return formatar_preco(cupom.valor)
 
 
@@ -40,9 +37,8 @@ def listar_cupons(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
-    hoje = date.today()
+    hoje = hoje_sao_paulo()
 
-    # IDs of coupons already used by this user
     usados_ids = {
         row.cupom_id
         for row in db.query(CupomUsado.cupom_id)
@@ -50,10 +46,11 @@ def listar_cupons(
         .all()
     }
 
-    # Active coupons not yet used by this user
     ativos_query = db.query(Cupom).filter(
         Cupom.ativo.is_(True),
+        Cupom.deletado_em.is_(None),
         Cupom.validade >= hoje,
+        (Cupom.max_usos.is_(None)) | (Cupom.total_usos < Cupom.max_usos),
     )
     if usados_ids:
         ativos_query = ativos_query.filter(~Cupom.id.in_(usados_ids))
@@ -64,16 +61,16 @@ def listar_cupons(
             descricao=c.descricao,
             tipo=c.tipo,
             valor=_formatar_valor_cupom(c),
-            validade=_formatar_validade(c),
+            validade=c.validade.isoformat(),
         )
-        for c in ativos_query.all()
+        for c in ativos_query.order_by(Cupom.validade.asc()).all()
     ]
 
-    # Coupons used by this user — eager-load cupom + pedido to avoid N+1
     usos = (
         db.query(CupomUsado)
         .options(joinedload(CupomUsado.cupom), joinedload(CupomUsado.pedido))
         .filter(CupomUsado.usuario_id == current_user.id)
+        .order_by(CupomUsado.usado_em.desc())
         .all()
     )
     usados: List[CupomUsadoResponse] = [
@@ -82,10 +79,11 @@ def listar_cupons(
             descricao=uso.cupom.descricao,
             tipo=uso.cupom.tipo,
             valor=_formatar_valor_cupom(uso.cupom),
-            validade=_formatar_validade(uso.cupom),
-            pedido=f"Pedido nº {uso.pedido.numero}" if uso.pedido else "Pedido não encontrado",
+            pedido=f"Pedido {uso.pedido.numero}" if uso.pedido else "Pedido nao encontrado",
+            usado_em=uso.usado_em.isoformat() if uso.usado_em else "",
         )
         for uso in usos
+        if uso.cupom
     ]
 
     return CuponsResponse(ativos=ativos, usados=usados)
@@ -97,49 +95,26 @@ def validar_cupom(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
-    cupom = db.query(Cupom).filter(
-        Cupom.codigo == data.codigo.upper(),
-        Cupom.ativo.is_(True),
-    ).first()
-
-    if not cupom:
-        return ValidarCupomResponse(valido=False, mensagem="Cupom não encontrado ou inativo.")
-
-    if cupom.validade < date.today():
-        return ValidarCupomResponse(valido=False, mensagem="Cupom expirado.")
-
-    if data.total_pedido < cupom.valor_minimo_pedido:
-        return ValidarCupomResponse(
-            valido=False,
-            mensagem=f"Pedido mínimo de {formatar_preco(cupom.valor_minimo_pedido)} para este cupom.",
+    try:
+        cupom, valor_desconto = validar_cupom_para_total(
+            db=db,
+            usuario=current_user,
+            codigo=data.codigo,
+            total=data.total,
+            valor_frete=data.valor_frete,
         )
+    except HTTPException as exc:
+        return ValidarCupomResponse(**resposta_validacao_invalida(data.codigo, str(exc.detail)))
 
-    if cupom.max_usos is not None and cupom.total_usos >= cupom.max_usos:
-        return ValidarCupomResponse(valido=False, mensagem="Cupom esgotado.")
-
-    ja_usado = db.query(CupomUsado).filter(
-        CupomUsado.cupom_id == cupom.id,
-        CupomUsado.usuario_id == current_user.id,
-    ).first()
-    if ja_usado:
-        return ValidarCupomResponse(valido=False, mensagem="Cupom já utilizado.")
-
-    if cupom.tipo == "porcentagem":
-        valor_desconto = round(data.total_pedido * (cupom.valor / 100), 2)
-        mensagem = f"Cupom aplicado: {int(cupom.valor)}% de desconto"
-    elif cupom.tipo == "valor":
-        valor_desconto = min(cupom.valor, data.total_pedido)
-        mensagem = f"Cupom aplicado: {formatar_preco(cupom.valor)} de desconto"
-    elif cupom.tipo == "frete":
-        valor_desconto = max(data.valor_frete, 0.0)
-        mensagem = "Cupom aplicado: Frete grátis"
-    else:
-        valor_desconto = 0.0
-        mensagem = "Cupom aplicado."
-
+    total_com_desconto = round(max(data.total - valor_desconto, 0.0), 2)
     return ValidarCupomResponse(
         valido=True,
+        codigo=cupom.codigo,
+        descricao=cupom.descricao,
         tipo=cupom.tipo,
         valor_desconto=valor_desconto,
-        mensagem=mensagem,
+        desconto_formatado=formatar_preco(valor_desconto),
+        total_com_desconto=total_com_desconto,
+        total_formatado=formatar_preco(total_com_desconto),
+        mensagem=f"Cupom aplicado: {descricao_desconto(cupom, valor_desconto)}",
     )

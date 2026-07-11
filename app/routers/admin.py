@@ -75,16 +75,46 @@ class CupomPayload(BaseModel):
     @classmethod
     def codigo_valido(cls, value: str) -> str:
         value = value.strip().upper()
-        if len(value) < 3:
-            raise ValueError("Código do cupom muito curto.")
+        if not value:
+            raise ValueError("Codigo do cupom e obrigatorio.")
+        return value
+
+    @field_validator("descricao")
+    @classmethod
+    def descricao_valida(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Descricao do cupom e obrigatoria.")
         return value
 
     @field_validator("tipo")
     @classmethod
     def tipo_valido(cls, value: str) -> str:
         if value not in {"porcentagem", "valor", "frete"}:
-            raise ValueError("Tipo de cupom inválido.")
+            raise ValueError("Tipo de cupom invalido.")
         return value
+
+    @field_validator("valor_minimo_pedido")
+    @classmethod
+    def valor_minimo_valido(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("Valor minimo do pedido deve ser maior ou igual a zero.")
+        return value
+
+    @field_validator("max_usos")
+    @classmethod
+    def max_usos_valido(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and value < 1:
+            raise ValueError("Maximo de usos deve ser nulo ou inteiro maior ou igual a 1.")
+        return value
+
+    def validar_valor_por_tipo(self) -> None:
+        if self.tipo == "porcentagem" and not (0 < self.valor <= 100):
+            raise HTTPException(status_code=422, detail="Cupom de porcentagem deve ter valor maior que 0 e menor ou igual a 100.")
+        if self.tipo == "valor" and self.valor <= 0:
+            raise HTTPException(status_code=422, detail="Cupom de valor fixo deve ter valor maior que 0.")
+        if self.tipo == "frete" and self.valor < 0:
+            raise HTTPException(status_code=422, detail="Cupom de frete deve ter valor maior ou igual a 0.")
 
 
 class RastreioPayload(BaseModel):
@@ -1226,10 +1256,14 @@ def deletar_produto(
 
 @router.get("/cupons")
 def listar_cupons_admin(
+    incluir_deletados: bool = Query(False),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    cupons = db.query(Cupom).order_by(Cupom.validade.desc()).all()
+    query = db.query(Cupom)
+    if not incluir_deletados:
+        query = query.filter(Cupom.deletado_em.is_(None))
+    cupons = query.order_by(Cupom.validade.desc()).all()
     return [
         {
             "id": cupom.id,
@@ -1268,6 +1302,7 @@ def criar_cupom_admin(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
+    data.validar_valor_por_tipo()
     exists = db.query(Cupom).filter(Cupom.codigo == data.codigo).first()
     if exists:
         raise HTTPException(status_code=409, detail="Cupom já cadastrado.")
@@ -1296,9 +1331,18 @@ def atualizar_cupom_admin(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    cupom = db.query(Cupom).filter(Cupom.id == cupom_id).first()
+    data.validar_valor_por_tipo()
+    cupom = db.query(Cupom).filter(Cupom.id == cupom_id, Cupom.deletado_em.is_(None)).first()
     if not cupom:
         raise HTTPException(status_code=404, detail="Cupom não encontrado.")
+
+    exists = (
+        db.query(Cupom)
+        .filter(Cupom.codigo == data.codigo, Cupom.id != cupom_id)
+        .first()
+    )
+    if exists:
+        raise HTTPException(status_code=409, detail="Cupom ja cadastrado.")
 
     # Não permitir alterar código se já tiver usos registrados
     if cupom.codigo != data.codigo and cupom.total_usos > 0:
@@ -1326,12 +1370,13 @@ def deletar_cupom_admin(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    cupom = db.query(Cupom).filter(Cupom.id == cupom_id).first()
+    cupom = db.query(Cupom).filter(Cupom.id == cupom_id, Cupom.deletado_em.is_(None)).first()
     if not cupom:
         raise HTTPException(status_code=404, detail="Cupom não encontrado.")
 
     if db.query(CupomUsado).filter(CupomUsado.cupom_id == cupom.id).first():
         cupom.ativo = False
+        cupom.deletado_em = datetime.now(timezone.utc)
     else:
         db.delete(cupom)
     db.commit()

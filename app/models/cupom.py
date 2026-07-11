@@ -18,6 +18,7 @@ class Cupom(Base):
     valor_minimo_pedido = Column(Float, default=0.0)
     max_usos = Column(Integer, nullable=True)
     total_usos = Column(Integer, default=0, nullable=False)
+    deletado_em = Column(DateTime(timezone=True), nullable=True)
 
     usos = relationship("CupomUsado", back_populates="cupom")
 
