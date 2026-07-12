@@ -88,6 +88,16 @@ if "deletado_em" not in _cupons_cols:
         _conn.execute(text(f"ALTER TABLE cupons ADD COLUMN deletado_em {deletado_em_type}"))
         _conn.commit()
 
+if "banners" in set(inspect(engine).get_table_names()):
+    _banners_cols = {col["name"] for col in inspect(engine).get_columns("banners")}
+    banner_datetime_type = "DATETIME" if engine.dialect.name == "sqlite" else "TIMESTAMP WITH TIME ZONE"
+    for _column_name in ("criado_em", "atualizado_em"):
+        if _column_name not in _banners_cols:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE banners ADD COLUMN {_column_name} {banner_datetime_type}"))
+                _conn.execute(text(f"UPDATE banners SET {_column_name} = CURRENT_TIMESTAMP WHERE {_column_name} IS NULL"))
+                _conn.commit()
+
 _produtos_cols = {col["name"] for col in inspect(engine).get_columns("produtos")}
 if "preco_promocional" not in _produtos_cols:
     with engine.connect() as _conn:

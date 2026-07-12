@@ -1481,7 +1481,7 @@ def deletar_avaliacao(
 async def _save_banner_image(file: UploadFile | None) -> str | None:
     if not file or not file.filename:
         return None
-    return await upload_image(file, folder="bia-collections/banners")
+    return await upload_image(file, folder="banners")
 
 
 def _banner_response(banner: Banner) -> dict:
@@ -1508,14 +1508,21 @@ def listar_banners_admin(
 async def criar_banner(
     titulo: str = Form(...),
     link: Optional[str] = Form(None),
-    imagem: UploadFile | None = File(None),
+    imagem: UploadFile = File(...),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
+    titulo_limpo = titulo.strip()
+    if not titulo_limpo:
+        raise HTTPException(status_code=422, detail="Titulo e obrigatorio.")
+
     img = await _save_banner_image(imagem)
+    if not img:
+        raise HTTPException(status_code=422, detail="Imagem e obrigatoria.")
+
     max_ordem = db.query(func.coalesce(func.max(Banner.ordem), 0)).scalar() or 0
     banner = Banner(
-        titulo=titulo.strip(),
+        titulo=titulo_limpo,
         imagem_url=img,
         link=link.strip() if link else None,
         ativo=True,
@@ -1533,9 +1540,23 @@ def reordenar_banners(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    for posicao, banner_id in enumerate(data.ids):
+    ids = data.ids
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=422, detail="Lista de ids contem duplicados.")
+
+    found_ids = (
+        {banner_id for (banner_id,) in db.query(Banner.id).filter(Banner.id.in_(ids)).all()}
+        if ids
+        else set()
+    )
+    missing_ids = set(ids) - found_ids
+    if missing_ids:
+        raise HTTPException(status_code=404, detail="Um ou mais banners nao foram encontrados.")
+
+    for posicao, banner_id in enumerate(ids, start=1):
         db.query(Banner).filter(Banner.id == banner_id).update(
-            {Banner.ordem: posicao}, synchronize_session=False
+            {Banner.ordem: posicao, Banner.atualizado_em: datetime.now(timezone.utc)},
+            synchronize_session=False,
         )
     db.commit()
     return {"ok": True}
@@ -1546,7 +1567,7 @@ async def atualizar_banner(
     banner_id: int,
     titulo: str = Form(...),
     link: Optional[str] = Form(None),
-    ativo: bool = Form(True),
+    ativo: Optional[bool] = Form(None),
     imagem: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
@@ -1555,15 +1576,23 @@ async def atualizar_banner(
     if not banner:
         raise HTTPException(status_code=404, detail="Banner não encontrado.")
 
+    titulo_limpo = titulo.strip()
+    if not titulo_limpo:
+        raise HTTPException(status_code=422, detail="Titulo e obrigatorio.")
+
+    old_image_url = banner.imagem_url
     img = await _save_banner_image(imagem)
-    banner.titulo = titulo.strip()
+    banner.titulo = titulo_limpo
     banner.link = link.strip() if link else None
-    banner.ativo = ativo
+    if ativo is not None:
+        banner.ativo = ativo
     if img:
         banner.imagem_url = img
 
     db.commit()
     db.refresh(banner)
+    if img and old_image_url and old_image_url != img:
+        delete_old_image(old_image_url)
     return _banner_response(banner)
 
 
@@ -1577,7 +1606,9 @@ def deletar_banner(
     if not banner:
         raise HTTPException(status_code=404, detail="Banner não encontrado.")
 
+    old_image_url = banner.imagem_url
     db.delete(banner)
     db.commit()
+    delete_old_image(old_image_url)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

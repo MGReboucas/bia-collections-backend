@@ -74,7 +74,7 @@ async def upload_image(file: UploadFile, folder: str = "bia-collections") -> str
     if _cloudinary_configured:
         return _upload_cloudinary(contents, folder)
     else:
-        return _save_local(contents, file.filename or "upload.jpg")
+        return _save_local(contents, file.filename or "upload.jpg", folder)
 
 
 def _upload_cloudinary(contents: bytes, folder: str) -> str:
@@ -91,14 +91,27 @@ def _upload_cloudinary(contents: bytes, folder: str) -> str:
     return result["secure_url"]
 
 
-def _save_local(contents: bytes, original_filename: str) -> str:
+def _safe_folder_parts(folder: str) -> list[str]:
+    parts = [
+        part
+        for part in folder.replace("\\", "/").split("/")
+        if part and part not in {".", ".."}
+    ]
+    if parts and parts[0] == "bia-collections":
+        parts = parts[1:]
+    return parts
+
+
+def _save_local(contents: bytes, original_filename: str, folder: str) -> str:
     ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else "jpg"
     filename = f"{uuid.uuid4().hex[:12]}.{ext}"
-    upload_dir = Path("uploads")
-    upload_dir.mkdir(exist_ok=True)
+    folder_parts = _safe_folder_parts(folder)
+    upload_dir = Path("uploads", *folder_parts)
+    upload_dir.mkdir(parents=True, exist_ok=True)
     (upload_dir / filename).write_bytes(contents)
     # Retorna caminho relativo com prefixo — clientes montam URL completa
-    return f"/uploads/{filename}"
+    path_parts = "/".join([*folder_parts, filename])
+    return f"/uploads/{path_parts}"
 
 
 def _cloudinary_public_id_from_url(url: str) -> str | None:
