@@ -83,8 +83,9 @@ if "total_usos" not in _cupons_cols:
         _conn.execute(text("ALTER TABLE cupons ADD COLUMN total_usos INTEGER NOT NULL DEFAULT 0"))
         _conn.commit()
 if "deletado_em" not in _cupons_cols:
+    deletado_em_type = "DATETIME" if engine.dialect.name == "sqlite" else "TIMESTAMP WITH TIME ZONE"
     with engine.connect() as _conn:
-        _conn.execute(text("ALTER TABLE cupons ADD COLUMN deletado_em DATETIME"))
+        _conn.execute(text(f"ALTER TABLE cupons ADD COLUMN deletado_em {deletado_em_type}"))
         _conn.commit()
 
 _produtos_cols = {col["name"] for col in inspect(engine).get_columns("produtos")}
