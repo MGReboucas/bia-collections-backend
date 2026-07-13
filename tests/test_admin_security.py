@@ -1897,18 +1897,20 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
         "pagamento_aprovado",
         "pedido_enviado",
         "recuperacao_senha",
+        "codigo_acesso",
         "cupom_disponivel",
         "manual",
     }
     assert by_event["pedido_criado"]["status"] == "ativo"
     assert by_event["manual"]["status"] == "rascunho"
+    assert by_event["codigo_acesso"]["status"] == "ativo"
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
 
     seed_email_automation()
     db = SessionLocal()
     try:
-        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 6
+        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 7
     finally:
         db.close()
 

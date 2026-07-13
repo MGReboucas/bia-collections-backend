@@ -423,9 +423,28 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
     <td>
       <h1>Redefinicao de senha</h1>
       <p>Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha.</p>
-      <p>Acesse o link abaixo para continuar:</p>
-      <p><a href="{{link_recuperacao}}">Redefinir senha</a></p>
+      <p>Use o codigo abaixo para continuar:</p>
+      <p style="font-size:24px; letter-spacing:6px;"><strong>{{codigo}}</strong></p>
+      <p>Este codigo expira em {{minutos_expiracao}} minutos.</p>
       <p>Se voce nao solicitou isso, ignore este email.</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+    _admin_template(
+        nome="Codigo de acesso",
+        slug="admin-default-codigo-acesso",
+        evento="codigo_acesso",
+        assunto="Seu codigo de acesso - {{loja_nome}}",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Seu codigo de acesso</h1>
+      <p>Use o codigo abaixo para concluir seu acesso com seguranca.</p>
+      <p style="font-size:24px; letter-spacing:6px;"><strong>{{codigo}}</strong></p>
+      <p>Este codigo expira em {{minutos_expiracao}} minutos.</p>
     </td>
   </tr>
 </table>

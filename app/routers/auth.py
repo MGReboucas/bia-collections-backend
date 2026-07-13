@@ -55,6 +55,11 @@ def _email_mascarado(email: str) -> str:
     return f"{local[:2]}***@{dominio}"
 
 
+def _frontend_url(path: str = "") -> str:
+    base_url = (settings.FRONTEND_URL or settings.STORE_URL or "").rstrip("/")
+    return f"{base_url}{path}" if base_url else path
+
+
 def _usuario_por_email(db: Session, email: str) -> Usuario | None:
     return (
         db.query(Usuario)
@@ -95,6 +100,24 @@ def _set_auth_cookie(response: Response, user: Usuario) -> None:
 
 def _send_two_factor_email_or_fail(db: Session, challenge: CreatedTwoFactorChallenge, email: str) -> None:
     try:
+        log = EmailAutomationService(db).send_event_now(
+            "two_factor_code",
+            {
+                "to": email,
+                "email": email,
+                "code": challenge.codigo,
+                "codigo": challenge.codigo,
+                "expires_in_minutes": str(challenge.expires_in // 60),
+                "minutos_expiracao": str(challenge.expires_in // 60),
+                "dedupe_key": f"two_factor_code:{challenge.challenge.id}",
+                "store_name": settings.STORE_NAME,
+                "loja_nome": settings.STORE_NAME,
+                "store_url": settings.STORE_URL or settings.FRONTEND_URL,
+                "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
+            },
+        )
+        if log:
+            return
         enviar_email_codigo_acesso(email, challenge.codigo)
     except Exception:
         invalidate_challenge(db, challenge.challenge)
@@ -235,7 +258,28 @@ def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, d
     db.commit()
 
     try:
-        enviar_email_reset(email, codigo)
+        log = EmailAutomationService(db).send_event_now(
+            "password_reset",
+            {
+                "to": email,
+                "email": email,
+                "reset_code": codigo,
+                "codigo": codigo,
+                "expires_in_minutes": "15",
+                "minutos_expiracao": "15",
+                "customer_name": user.nome_completo or user.username,
+                "cliente_nome": user.nome_completo or user.username,
+                "user_id": user.id,
+                "store_name": settings.STORE_NAME,
+                "loja_nome": settings.STORE_NAME,
+                "store_url": settings.STORE_URL or settings.FRONTEND_URL,
+                "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
+                "link_recuperacao": _frontend_url("/recuperar-senha"),
+                "dedupe_key": f"password_reset:{reset.id}",
+            },
+        )
+        if not log:
+            enviar_email_reset(email, codigo)
     except Exception:
         logger.exception("Falha ao enviar email de reset para %s", _email_mascarado(email))
         # Não expõe o erro de SMTP ao cliente

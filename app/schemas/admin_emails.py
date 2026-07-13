@@ -9,6 +9,7 @@ EmailEvento = Literal[
     "pagamento_aprovado",
     "pedido_enviado",
     "recuperacao_senha",
+    "codigo_acesso",
     "cupom_disponivel",
     "manual",
 ]

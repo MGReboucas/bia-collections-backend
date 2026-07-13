@@ -31,6 +31,7 @@ EVENTO_TO_SLUG_PREFIX = {
     "pagamento_aprovado": "pagamento-aprovado",
     "pedido_enviado": "pedido-enviado",
     "recuperacao_senha": "recuperacao-senha",
+    "codigo_acesso": "codigo-acesso",
     "cupom_disponivel": "cupom-disponivel",
     "manual": "manual",
 }
