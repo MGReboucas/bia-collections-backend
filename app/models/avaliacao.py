@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -24,7 +24,7 @@ class Avaliacao(Base):
     nota = Column(Integer, nullable=False)  # 1-5
     comentario = Column(Text, nullable=True)
     status = Column(String(20), default="pendente")  # pendente | aprovada | reprovada
-    mostrar_home = Column(Boolean, nullable=False, default=False, server_default="0")
+    mostrar_home = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
     atualizado_em = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

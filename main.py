@@ -159,11 +159,12 @@ _table_names = set(inspect(engine).get_table_names())
 if "avaliacoes" in _table_names:
     _avaliacoes_cols = {col["name"] for col in inspect(engine).get_columns("avaliacoes")}
     avaliacao_datetime_type = "DATETIME" if engine.dialect.name == "sqlite" else "TIMESTAMP WITH TIME ZONE"
+    avaliacao_boolean_default = "0" if engine.dialect.name == "sqlite" else "FALSE"
     for _column_name, _definition in {
         "pedido_id": "INTEGER",
         "pedido_numero": "VARCHAR(20)",
         "atualizado_em": avaliacao_datetime_type,
-        "mostrar_home": "BOOLEAN NOT NULL DEFAULT 0",
+        "mostrar_home": f"BOOLEAN NOT NULL DEFAULT {avaliacao_boolean_default}",
     }.items():
         if _column_name not in _avaliacoes_cols:
             with engine.connect() as _conn:
