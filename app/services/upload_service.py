@@ -84,9 +84,6 @@ def _upload_cloudinary(contents: bytes, folder: str) -> str:
         resource_type="image",
         overwrite=False,
         unique_filename=True,
-        transformation=[
-            {"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"},
-        ],
     )
     return result["secure_url"]
 
