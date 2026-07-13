@@ -5,8 +5,10 @@ Usage:
     python seed.py
 """
 import json
+import shutil
 import sys
 from datetime import date
+from pathlib import Path
 
 # Ensure the backend folder is on sys.path when running from project root
 import os
@@ -22,6 +24,62 @@ from app.core.security import get_password_hash
 from app.models.usuario import Usuario
 from app.models.produto import Categoria, Produto
 from app.models.cupom import Cupom
+from app.models.banner import Banner
+
+
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BACKEND_DIR.parents[1]
+FRONTEND_BANNER_DIR = (
+    PROJECT_DIR
+    / "nextjs"
+    / "bia-collections-nextjs"
+    / "public"
+    / "images"
+    / "banners"
+    / "novos-banners"
+)
+BANNER_UPLOAD_DIR = BACKEND_DIR / "uploads" / "banners"
+
+
+def seed_initial_banners(db) -> None:
+    banners_data = [
+        ("Banner 1", "Banner-1.png", 1),
+        ("Banner 2", "Banner-2.png", 2),
+        ("Banner 3", "Banner-3.png", 3),
+    ]
+
+    BANNER_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    for title, filename, ordem in banners_data:
+        source = FRONTEND_BANNER_DIR / filename
+        destination = BANNER_UPLOAD_DIR / filename
+        imagem_url = f"/uploads/banners/{filename}"
+
+        if source.exists():
+            shutil.copy2(source, destination)
+        elif not destination.exists():
+            print(f"[!!] Imagem do banner nao encontrada: {source}")
+            print(f"     Coloque o arquivo em: {destination}")
+            continue
+
+        banner = db.query(Banner).filter(Banner.titulo == title).first()
+        if not banner:
+            db.add(
+                Banner(
+                    titulo=title,
+                    imagem_url=imagem_url,
+                    link="/produtos",
+                    ativo=True,
+                    ordem=ordem,
+                )
+            )
+            print(f"[OK] Banner inicial '{title}' criado.")
+        else:
+            banner.imagem_url = imagem_url
+            banner.link = "/produtos"
+            banner.ativo = True
+            banner.ordem = ordem
+            print(f"[--] Banner inicial '{title}' atualizado.")
 
 
 def seed():
@@ -214,6 +272,8 @@ def seed():
                 print(f"✓ Cupom '{cd['codigo']}' criado.")
             else:
                 print(f"· Cupom '{cd['codigo']}' já existe.")
+
+        seed_initial_banners(db)
 
         db.commit()
         print("\n✅ Seed concluído com sucesso!")

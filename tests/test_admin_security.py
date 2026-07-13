@@ -21,6 +21,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.reset_senha import ResetSenha
+from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
@@ -1602,3 +1603,88 @@ def test_assinatura_webhook_fallback_valida_hmac():
         data_id,
         secret,
     )
+
+
+def test_fluxo_banners_home_admin_upload_ordem_static_e_auth(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    create_user("cliente-banner", "cliente-banner@example.com")
+    headers = auth_headers("master")
+
+    sem_token = client.get("/api/v1/admin/banners")
+    assert sem_token.status_code == 401
+
+    usuario_comum = client.get(
+        "/api/v1/admin/banners",
+        headers=auth_headers("cliente-banner"),
+    )
+    assert usuario_comum.status_code == 403
+
+    banner_1 = client.post(
+        "/api/v1/admin/banners",
+        data={"titulo": "Banner Home 1", "link": "/produtos"},
+        files={"imagem": ("banner-1.png", b"fake-png-1", "image/png")},
+        headers=headers,
+    )
+    assert banner_1.status_code == 201
+    body_1 = banner_1.json()
+    assert body_1 == {
+        "id": body_1["id"],
+        "titulo": "Banner Home 1",
+        "imagem_url": body_1["imagem_url"],
+        "link": "/produtos",
+        "ativo": True,
+        "ordem": 1,
+    }
+    assert body_1["imagem_url"].startswith("/uploads/banners/")
+    assert client.get(body_1["imagem_url"]).status_code == 200
+
+    banner_2 = client.post(
+        "/api/v1/admin/banners",
+        data={"titulo": "Banner Home 2", "link": "/produtos"},
+        files={"imagem": ("banner-2.png", b"fake-png-2", "image/png")},
+        headers=headers,
+    )
+    assert banner_2.status_code == 201
+    body_2 = banner_2.json()
+    assert body_2["ordem"] == 2
+
+    editado = client.put(
+        f"/api/v1/admin/banners/{body_2['id']}",
+        data={"titulo": "Banner Home 2 Editado", "link": "", "ativo": "false"},
+        headers=headers,
+    )
+    assert editado.status_code == 200
+    assert editado.json()["titulo"] == "Banner Home 2 Editado"
+    assert editado.json()["link"] is None
+    assert editado.json()["ativo"] is False
+    assert editado.json()["imagem_url"] == body_2["imagem_url"]
+
+    admin_list = client.get("/api/v1/admin/banners", headers=headers)
+    assert admin_list.status_code == 200
+    assert [banner["id"] for banner in admin_list.json()] == [body_1["id"], body_2["id"]]
+    assert [banner["ativo"] for banner in admin_list.json()] == [True, False]
+
+    public_list = client.get("/api/v1/banners")
+    assert public_list.status_code == 200
+    assert [banner["id"] for banner in public_list.json()] == [body_1["id"]]
+
+    reordem = client.put(
+        "/api/v1/admin/banners/ordem",
+        json={"ids": [body_2["id"], body_1["id"]]},
+        headers=headers,
+    )
+    assert reordem.status_code == 200
+    assert reordem.json() == {"ok": True}
+
+    admin_reordenado = client.get("/api/v1/admin/banners", headers=headers)
+    assert [banner["id"] for banner in admin_reordenado.json()] == [body_2["id"], body_1["id"]]
+    assert [banner["ordem"] for banner in admin_reordenado.json()] == [1, 2]
+
+    removido = client.delete(f"/api/v1/admin/banners/{body_2['id']}", headers=headers)
+    assert removido.status_code == 204
+
+    db = SessionLocal()
+    try:
+        assert db.query(Banner).filter(Banner.id == body_2["id"]).first() is None
+    finally:
+        db.close()
