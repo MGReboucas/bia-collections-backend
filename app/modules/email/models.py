@@ -9,6 +9,10 @@ class EmailTemplate(Base):
     __tablename__ = "email_templates"
 
     id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String(120), nullable=True, index=True)
+    evento = Column(String(80), nullable=True, index=True)
+    status = Column(String(20), nullable=True, index=True)
+    html = Column(Text, nullable=True)
     name = Column(String(120), nullable=False)
     slug = Column(String(120), nullable=False, unique=True, index=True)
     category = Column(String(80), nullable=False, index=True)

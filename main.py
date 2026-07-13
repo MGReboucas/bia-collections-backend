@@ -10,6 +10,7 @@ import app.models  # noqa: F401 — registers all models with Base before create
 from app.core.database import Base, engine
 from app.core.config import settings
 from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners, avaliacoes
+from app.routers.admin_emails import router as admin_emails_router
 from app.modules.email.routes import router as email_admin_router
 from app.modules.email.seeds import seed_email_automation
 from sqlalchemy import inspect, text
@@ -171,6 +172,19 @@ if "avaliacoes" in _table_names:
                 _conn.execute(text(f"ALTER TABLE avaliacoes ADD COLUMN {_column_name} {_definition}"))
                 _conn.commit()
 
+if "email_templates" in _table_names:
+    _email_template_cols = {col["name"] for col in inspect(engine).get_columns("email_templates")}
+    for _column_name, _definition in {
+        "nome": "VARCHAR(120)",
+        "evento": "VARCHAR(80)",
+        "status": "VARCHAR(20)",
+        "html": "TEXT",
+    }.items():
+        if _column_name not in _email_template_cols:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE email_templates ADD COLUMN {_column_name} {_definition}"))
+                _conn.commit()
+
 with engine.begin() as _conn:
     _conn.execute(
         text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),
@@ -216,6 +230,7 @@ app.include_router(pagamentos, prefix="/api/v1")
 app.include_router(banners, prefix="/api/v1")
 app.include_router(avaliacoes, prefix="/api/v1")
 app.include_router(admin, prefix="/api/v1")
+app.include_router(admin_emails_router, prefix="/api/v1")
 app.include_router(email_admin_router, prefix="/api/v1")
 
 

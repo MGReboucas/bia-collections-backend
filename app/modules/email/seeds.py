@@ -49,6 +49,32 @@ def _template(
     }
 
 
+def _admin_template(
+    *,
+    nome: str,
+    slug: str,
+    evento: str,
+    assunto: str,
+    html: str,
+    status: str = "ativo",
+) -> dict[str, Any]:
+    text_template = " ".join(html.replace("\n", " ").split())
+    return {
+        "nome": nome,
+        "name": nome,
+        "slug": slug,
+        "category": evento,
+        "subject": assunto,
+        "evento": evento,
+        "status": status,
+        "html": html,
+        "html_template": html,
+        "text_template": text_template,
+        "variables_schema": "{}",
+        "is_active": status == "ativo",
+    }
+
+
 EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
     _template(
         name="Boas-vindas",
@@ -329,6 +355,121 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
 ]
 
 
+ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
+    _admin_template(
+        nome="Confirmacao de pedido",
+        slug="admin-default-pedido-criado",
+        evento="pedido_criado",
+        assunto="Recebemos seu pedido {{pedido_numero}}",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Pedido recebido</h1>
+      <p>Ola {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}.</p>
+      <p>Total do pedido: <strong>{{pedido_total}}</strong>.</p>
+      <p>Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>
+      <p>{{loja_nome}}</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+    _admin_template(
+        nome="Pagamento aprovado",
+        slug="admin-default-pagamento-aprovado",
+        evento="pagamento_aprovado",
+        assunto="Pagamento aprovado - Pedido {{pedido_numero}}",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Pagamento aprovado</h1>
+      <p>Ola {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado.</p>
+      <p>Total confirmado: <strong>{{pedido_total}}</strong>.</p>
+      <p>Agora vamos separar seus produtos e avisar quando o pedido for enviado.</p>
+      <p>{{loja_nome}}</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+    _admin_template(
+        nome="Pedido enviado",
+        slug="admin-default-pedido-enviado",
+        evento="pedido_enviado",
+        assunto="Seu pedido {{pedido_numero}} foi enviado",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Pedido enviado</h1>
+      <p>Ola {{cliente_nome}}, seu pedido {{pedido_numero}} saiu para entrega.</p>
+      <p>Codigo de rastreio: <strong>{{codigo_rastreio}}</strong></p>
+      <p>Obrigada por comprar com a {{loja_nome}}.</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+    _admin_template(
+        nome="Recuperacao de senha",
+        slug="admin-default-recuperacao-senha",
+        evento="recuperacao_senha",
+        assunto="Redefinicao de senha - {{loja_nome}}",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Redefinicao de senha</h1>
+      <p>Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha.</p>
+      <p>Acesse o link abaixo para continuar:</p>
+      <p><a href="{{link_recuperacao}}">Redefinir senha</a></p>
+      <p>Se voce nao solicitou isso, ignore este email.</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+    _admin_template(
+        nome="Cupom disponivel",
+        slug="admin-default-cupom-disponivel",
+        evento="cupom_disponivel",
+        assunto="Seu cupom {{cupom_codigo}} esta disponivel",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Cupom disponivel</h1>
+      <p>Ola {{cliente_nome}}, voce tem um cupom para usar na {{loja_nome}}.</p>
+      <p>Codigo do cupom: <strong>{{cupom_codigo}}</strong></p>
+      <p>Aproveite enquanto ele estiver disponivel.</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+    _admin_template(
+        nome="Email manual",
+        slug="admin-default-manual",
+        evento="manual",
+        assunto="Mensagem da {{loja_nome}}",
+        status="rascunho",
+        html="""
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td>
+      <h1>Ola {{cliente_nome}}</h1>
+      <p>Escreva aqui a mensagem que deseja enviar manualmente.</p>
+      <p>{{loja_nome}}</p>
+    </td>
+  </tr>
+</table>
+""".strip(),
+    ),
+]
+
+
 AUTOMATION_SEEDS = [
     ("user_registered", "user-registered", 0),
     ("email_confirmation", "email-confirmation", 0),
@@ -369,6 +510,18 @@ def seed_email_automation(db: Session | None = None) -> None:
                 session.add(template)
                 session.flush()
             templates_by_slug[data["slug"]] = template
+
+        for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
+            exists_for_event = (
+                session.query(EmailTemplate)
+                .filter(EmailTemplate.evento == data["evento"])
+                .first()
+            )
+            if exists_for_event:
+                continue
+            template = session.query(EmailTemplate).filter(EmailTemplate.slug == data["slug"]).first()
+            if not template:
+                session.add(EmailTemplate(**data))
 
         for event_key, template_slug, delay_minutes in AUTOMATION_SEEDS:
             template = templates_by_slug.get(template_slug)

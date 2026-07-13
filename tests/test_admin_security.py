@@ -29,6 +29,8 @@ from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
+from app.modules.email.models import EmailTemplate
+from app.modules.email.seeds import seed_email_automation
 from app.services.two_factor_service import hash_two_factor_token
 from main import app
 
@@ -1770,6 +1772,145 @@ def test_public_produto_retorna_avaliacoes_aprovadas_do_produto(client):
     body = response.json()
     assert [item["id"] for item in body] == [aprovada_id]
     assert outra_aprovada_id not in [item["id"] for item in body]
+
+
+def test_admin_emails_crud_e_limite_de_um_ativo_por_evento(client):
+    create_user("master-emails", MASTER_ADMIN_EMAIL, is_admin=True)
+    headers = auth_headers("master-emails")
+    payload = {
+        "nome": "Confirmacao de pedido",
+        "assunto": "Recebemos seu pedido {{pedido_numero}}",
+        "evento": "pedido_criado",
+        "status": "ativo",
+        "html": "<table><tr><td>Ola {{cliente_nome}}</td></tr></table>",
+    }
+
+    sem_token = client.get("/api/v1/admin/emails")
+    assert sem_token.status_code == 401
+
+    invalido = client.post("/api/v1/admin/emails", json={}, headers=headers)
+    assert invalido.status_code == 422
+    assert invalido.json()["detail"]["message"] == "Campo obrigatorio: nome."
+
+    criado = client.post("/api/v1/admin/emails", json=payload, headers=headers)
+    assert criado.status_code == 201
+    body = criado.json()
+    assert body["nome"] == "Confirmacao de pedido"
+    assert body["assunto"] == "Recebemos seu pedido {{pedido_numero}}"
+    assert body["evento"] == "pedido_criado"
+    assert body["status"] == "ativo"
+    assert body["html"] == payload["html"]
+    assert body["atualizado_em"] is not None
+
+    duplicado_ativo = client.post(
+        "/api/v1/admin/emails",
+        json={**payload, "nome": "Outro ativo"},
+        headers=headers,
+    )
+    assert duplicado_ativo.status_code == 409
+    assert duplicado_ativo.json()["detail"]["message"] == "Ja existe um template ativo para este evento."
+
+    rascunho = client.post(
+        "/api/v1/admin/emails",
+        json={**payload, "nome": "Rascunho", "status": "rascunho"},
+        headers=headers,
+    )
+    assert rascunho.status_code == 201
+
+    lista = client.get("/api/v1/admin/emails", headers=headers)
+    assert lista.status_code == 200
+    assert {item["id"] for item in lista.json()} == {body["id"], rascunho.json()["id"]}
+
+    atualizado = client.put(
+        f"/api/v1/admin/emails/{rascunho.json()['id']}",
+        json={**payload, "nome": "Manual ativo", "evento": "manual"},
+        headers=headers,
+    )
+    assert atualizado.status_code == 200
+    assert atualizado.json()["evento"] == "manual"
+    assert atualizado.json()["status"] == "ativo"
+
+    removido = client.delete(f"/api/v1/admin/emails/{body['id']}", headers=headers)
+    assert removido.status_code == 204
+
+
+def test_admin_emails_envia_teste_substituindo_variaveis(client, monkeypatch):
+    create_user("master-email-teste", MASTER_ADMIN_EMAIL, is_admin=True)
+    headers = auth_headers("master-email-teste")
+    enviado = {}
+
+    class FakeEmailProvider:
+        def send(self, to: str, subject: str, html: str | None = None, text: str | None = None):
+            enviado.update({"to": to, "subject": subject, "html": html, "text": text})
+
+    admin_emails_module = importlib.import_module("app.routers.admin_emails")
+    monkeypatch.setattr(admin_emails_module, "EmailProvider", FakeEmailProvider)
+
+    criado = client.post(
+        "/api/v1/admin/emails",
+        json={
+            "nome": "Teste envio",
+            "assunto": "Pedido {{pedido_numero}} para {{cliente_nome}}",
+            "evento": "manual",
+            "status": "rascunho",
+            "html": "<strong>{{cliente_nome}}</strong> - {{pedido_total}}",
+        },
+        headers=headers,
+    )
+    assert criado.status_code == 201
+
+    response = client.post(
+        f"/api/v1/admin/emails/{criado.json()['id']}/teste",
+        json={
+            "email_destino": " Cliente@Example.com ",
+            "variaveis": {
+                "cliente_nome": "Bia",
+                "pedido_numero": "000123",
+                "pedido_total": "R$ 149,90",
+            },
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "Email de teste enviado."}
+    assert enviado["to"] == "cliente@example.com"
+    assert enviado["subject"] == "Pedido 000123 para Bia"
+    assert enviado["html"] == "<strong>Bia</strong> - R$ 149,90"
+
+
+def test_seed_cria_templates_padrao_do_painel_admin(client):
+    create_user("master-email-seed", MASTER_ADMIN_EMAIL, is_admin=True)
+
+    seed_email_automation()
+
+    response = client.get(
+        "/api/v1/admin/emails",
+        headers=auth_headers("master-email-seed"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    by_event = {item["evento"]: item for item in body}
+    assert set(by_event) == {
+        "pedido_criado",
+        "pagamento_aprovado",
+        "pedido_enviado",
+        "recuperacao_senha",
+        "cupom_disponivel",
+        "manual",
+    }
+    assert by_event["pedido_criado"]["status"] == "ativo"
+    assert by_event["manual"]["status"] == "rascunho"
+    assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
+    assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
+
+    seed_email_automation()
+    db = SessionLocal()
+    try:
+        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 6
+    finally:
+        db.close()
 
 
 def test_fluxo_banners_home_admin_upload_ordem_static_e_auth(client):
