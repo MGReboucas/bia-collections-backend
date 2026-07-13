@@ -20,6 +20,7 @@ import pytest
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
+from app.models.avaliacao import Avaliacao
 from app.models.reset_senha import ResetSenha
 from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomUsado
@@ -116,6 +117,35 @@ def update_challenge_by_token(token: str, **values) -> None:
             TwoFactorChallenge.token_hash == hash_two_factor_token(token)
         ).update(values)
         db.commit()
+    finally:
+        db.close()
+
+
+def create_product_review(
+    *,
+    produto_nome: str,
+    username: str,
+    email: str,
+    status: str,
+    mostrar_home: bool = False,
+) -> tuple[int, int]:
+    user_id = create_user(username, email)
+    db = SessionLocal()
+    try:
+        produto = Produto(nome=produto_nome, descricao="Produto teste", preco=99.9)
+        db.add(produto)
+        db.flush()
+        avaliacao = Avaliacao(
+            produto_id=produto.id,
+            usuario_id=user_id,
+            nota=5,
+            comentario=f"Avaliacao {produto_nome}",
+            status=status,
+            mostrar_home=mostrar_home,
+        )
+        db.add(avaliacao)
+        db.commit()
+        return produto.id, avaliacao.id
     finally:
         db.close()
 
@@ -1603,6 +1633,143 @@ def test_assinatura_webhook_fallback_valida_hmac():
         data_id,
         secret,
     )
+
+
+def test_admin_marca_avaliacao_aprovada_para_home(client):
+    create_user("master-home", MASTER_ADMIN_EMAIL, is_admin=True)
+    _, avaliacao_id = create_product_review(
+        produto_nome="Vestido Home",
+        username="cliente-review-home",
+        email="cliente-review-home@example.com",
+        status="aprovada",
+    )
+
+    response = client.put(
+        f"/api/v1/admin/avaliacoes/{avaliacao_id}/home",
+        json={"mostrar_home": True},
+        headers=auth_headers("master-home"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == avaliacao_id
+    assert body["status"] == "aprovada"
+    assert body["mostrar_home"] is True
+
+
+def test_admin_status_reprovado_remove_avaliacao_da_home(client):
+    create_user("master-home-status", MASTER_ADMIN_EMAIL, is_admin=True)
+    _, avaliacao_id = create_product_review(
+        produto_nome="Vestido Status Home",
+        username="cliente-review-status-home",
+        email="cliente-review-status-home@example.com",
+        status="aprovada",
+        mostrar_home=True,
+    )
+
+    response = client.put(
+        f"/api/v1/admin/avaliacoes/{avaliacao_id}/status",
+        json={"status": "reprovada"},
+        headers=auth_headers("master-home-status"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "reprovada"
+    assert body["mostrar_home"] is False
+
+
+def test_admin_nao_destaca_avaliacao_pendente_ou_reprovada(client):
+    create_user("master-home-bloqueio", MASTER_ADMIN_EMAIL, is_admin=True)
+    _, pendente_id = create_product_review(
+        produto_nome="Blusa Pendente",
+        username="cliente-review-pendente",
+        email="cliente-review-pendente@example.com",
+        status="pendente",
+    )
+    _, reprovada_id = create_product_review(
+        produto_nome="Blusa Reprovada",
+        username="cliente-review-reprovada",
+        email="cliente-review-reprovada@example.com",
+        status="reprovada",
+    )
+    headers = auth_headers("master-home-bloqueio")
+
+    pendente = client.put(
+        f"/api/v1/admin/avaliacoes/{pendente_id}/home",
+        json={"mostrar_home": True},
+        headers=headers,
+    )
+    reprovada = client.put(
+        f"/api/v1/admin/avaliacoes/{reprovada_id}/home",
+        json={"mostrar_home": True},
+        headers=headers,
+    )
+
+    assert pendente.status_code == 400
+    assert reprovada.status_code == 400
+    assert "aprovadas" in pendente.json()["detail"]
+    assert "aprovadas" in reprovada.json()["detail"]
+
+
+def test_public_home_retorna_apenas_avaliacoes_aprovadas_destacadas(client):
+    _, featured_id = create_product_review(
+        produto_nome="Saia Home Aprovada",
+        username="cliente-home-aprovada",
+        email="cliente-home-aprovada@example.com",
+        status="aprovada",
+        mostrar_home=True,
+    )
+    create_product_review(
+        produto_nome="Saia Home Pendente",
+        username="cliente-home-pendente",
+        email="cliente-home-pendente@example.com",
+        status="pendente",
+        mostrar_home=True,
+    )
+    create_product_review(
+        produto_nome="Saia Home Nao Destacada",
+        username="cliente-home-nao-destacada",
+        email="cliente-home-nao-destacada@example.com",
+        status="aprovada",
+        mostrar_home=False,
+    )
+
+    response = client.get("/api/v1/avaliacoes?mostrar_home=true")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body] == [featured_id]
+    assert body[0]["mostrar_home"] is True
+    assert body[0]["status"] == "aprovada"
+
+
+def test_public_produto_retorna_avaliacoes_aprovadas_do_produto(client):
+    produto_id, aprovada_id = create_product_review(
+        produto_nome="Produto Avaliado",
+        username="cliente-produto-aprovada",
+        email="cliente-produto-aprovada@example.com",
+        status="aprovada",
+    )
+    create_product_review(
+        produto_nome="Produto Pendente",
+        username="cliente-produto-pendente",
+        email="cliente-produto-pendente@example.com",
+        status="pendente",
+    )
+    _, outra_aprovada_id = create_product_review(
+        produto_nome="Outro Produto Avaliado",
+        username="cliente-produto-outra",
+        email="cliente-produto-outra@example.com",
+        status="aprovada",
+    )
+
+    response = client.get(f"/api/v1/avaliacoes?produto_id={produto_id}&status=aprovada")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body] == [aprovada_id]
+    assert outra_aprovada_id not in [item["id"] for item in body]
 
 
 def test_fluxo_banners_home_admin_upload_ordem_static_e_auth(client):

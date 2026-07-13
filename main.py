@@ -163,6 +163,7 @@ if "avaliacoes" in _table_names:
         "pedido_id": "INTEGER",
         "pedido_numero": "VARCHAR(20)",
         "atualizado_em": avaliacao_datetime_type,
+        "mostrar_home": "BOOLEAN NOT NULL DEFAULT 0",
     }.items():
         if _column_name not in _avaliacoes_cols:
             with engine.connect() as _conn:

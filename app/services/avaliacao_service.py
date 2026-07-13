@@ -112,6 +112,7 @@ def avaliacao_response(avaliacao: Avaliacao) -> dict:
         "nota": avaliacao.nota,
         "comentario": avaliacao.comentario,
         "status": avaliacao.status,
+        "mostrar_home": bool(avaliacao.mostrar_home),
         "fotos": fotos,
         "imagens": fotos,
         "criado_em": avaliacao.criado_em.isoformat() if avaliacao.criado_em else "",

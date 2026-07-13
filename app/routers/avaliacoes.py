@@ -20,8 +20,10 @@ router = APIRouter(prefix="/avaliacoes", tags=["avaliacoes"])
 
 @router.get("")
 def listar_avaliacoes_publico(
+    status: Optional[str] = Query(None),
     produto_id: Optional[int] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=100),
+    mostrar_home: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
 ):
     query = (
@@ -29,8 +31,14 @@ def listar_avaliacoes_publico(
         .filter(Avaliacao.status == AVALIACAO_STATUS_PUBLICO)
         .order_by(Avaliacao.criado_em.desc())
     )
+    if status is not None and status != AVALIACAO_STATUS_PUBLICO:
+        return []
     if produto_id is not None:
         query = query.filter(Avaliacao.produto_id == produto_id)
+    if mostrar_home is True:
+        query = query.filter(Avaliacao.mostrar_home.is_(True))
+    elif mostrar_home is False:
+        query = query.filter(Avaliacao.mostrar_home.is_(False))
     if limit is not None:
         query = query.limit(limit)
     return [avaliacao_response(avaliacao) for avaliacao in query.all()]

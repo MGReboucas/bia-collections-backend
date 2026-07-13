@@ -148,6 +148,10 @@ class AvaliacaoStatusPayload(BaseModel):
         return value
 
 
+class AvaliacaoHomePayload(BaseModel):
+    mostrar_home: bool
+
+
 class BannerOrdemPayload(BaseModel):
     ids: List[int]
 
@@ -1449,6 +1453,31 @@ def atualizar_status_avaliacao(
         raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
 
     avaliacao.status = data.status
+    if data.status != "aprovada":
+        avaliacao.mostrar_home = False
+    db.commit()
+    return avaliacao_response(
+        avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()
+    )
+
+
+@router.put("/avaliacoes/{avaliacao_id}/home")
+def atualizar_home_avaliacao(
+    avaliacao_id: int,
+    data: AvaliacaoHomePayload,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    avaliacao = avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()
+    if not avaliacao:
+        raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
+    if avaliacao.status != "aprovada":
+        raise HTTPException(
+            status_code=400,
+            detail="Apenas avaliacoes aprovadas podem aparecer na home.",
+        )
+
+    avaliacao.mostrar_home = data.mostrar_home
     db.commit()
     return avaliacao_response(
         avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()
