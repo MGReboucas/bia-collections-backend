@@ -34,6 +34,7 @@ class Pedido(Base):
     usuario = relationship("Usuario", back_populates="pedidos")
     itens = relationship("ItemPedido", back_populates="pedido")
     cupons_usados = relationship("CupomUsado", back_populates="pedido")
+    avaliacoes = relationship("Avaliacao", back_populates="pedido")
 
 
 class ItemPedido(Base):

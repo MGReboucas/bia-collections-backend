@@ -37,6 +37,14 @@ from app.services.payment_status import (
     ORDER_STATUSES,
     ORDER_STATUSES_OPERACIONAIS,
 )
+from app.services.avaliacao_service import (
+    AVALIACAO_STATUS_ADMIN_UPDATE,
+    AVALIACAO_STATUS_VALUES,
+    avaliacao_file_urls,
+    avaliacao_query,
+    avaliacao_response,
+    delete_avaliacao_files,
+)
 from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(
@@ -135,7 +143,7 @@ class AvaliacaoStatusPayload(BaseModel):
     @field_validator("status")
     @classmethod
     def status_valido(cls, value: str) -> str:
-        if value not in {"aprovada", "reprovada"}:
+        if value not in AVALIACAO_STATUS_ADMIN_UPDATE:
             raise ValueError("Status de avaliação inválido.")
         return value
 
@@ -1422,27 +1430,11 @@ def listar_avaliacoes_admin(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    query = (
-        db.query(Avaliacao)
-        .options(joinedload(Avaliacao.produto), joinedload(Avaliacao.usuario))
-        .order_by(Avaliacao.criado_em.desc())
-    )
-    if status in ("pendente", "aprovada", "reprovada"):
+    query = avaliacao_query(db).order_by(Avaliacao.criado_em.desc())
+    if status in AVALIACAO_STATUS_VALUES:
         query = query.filter(Avaliacao.status == status)
 
-    return [
-        {
-            "id": a.id,
-            "produto_id": a.produto_id,
-            "produto_nome": a.produto.nome if a.produto else None,
-            "usuario_nome": a.usuario.nome_completo or a.usuario.username if a.usuario else None,
-            "nota": a.nota,
-            "comentario": a.comentario,
-            "status": a.status,
-            "criado_em": a.criado_em.isoformat() if a.criado_em else "",
-        }
-        for a in query.all()
-    ]
+    return [avaliacao_response(avaliacao) for avaliacao in query.all()]
 
 
 @router.put("/avaliacoes/{avaliacao_id}/status")
@@ -1452,13 +1444,15 @@ def atualizar_status_avaliacao(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    avaliacao = db.query(Avaliacao).filter(Avaliacao.id == avaliacao_id).first()
+    avaliacao = avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()
     if not avaliacao:
         raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
 
     avaliacao.status = data.status
     db.commit()
-    return {"id": avaliacao.id, "status": avaliacao.status}
+    return avaliacao_response(
+        avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()
+    )
 
 
 @router.delete("/avaliacoes/{avaliacao_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1467,12 +1461,14 @@ def deletar_avaliacao(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    avaliacao = db.query(Avaliacao).filter(Avaliacao.id == avaliacao_id).first()
+    avaliacao = avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()
     if not avaliacao:
         raise HTTPException(status_code=404, detail="Avaliação não encontrada.")
 
+    image_urls = avaliacao_file_urls(avaliacao)
     db.delete(avaliacao)
     db.commit()
+    delete_avaliacao_files(image_urls)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 import app.models  # noqa: F401 — registers all models with Base before create_all()
 from app.core.database import Base, engine
 from app.core.config import settings
-from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners
+from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners, avaliacoes
 from app.modules.email.routes import router as email_admin_router
 from app.modules.email.seeds import seed_email_automation
 from sqlalchemy import inspect, text
@@ -155,6 +155,20 @@ if "produto_imagens" in set(inspect(engine).get_table_names()):
             )
         )
 
+_table_names = set(inspect(engine).get_table_names())
+if "avaliacoes" in _table_names:
+    _avaliacoes_cols = {col["name"] for col in inspect(engine).get_columns("avaliacoes")}
+    avaliacao_datetime_type = "DATETIME" if engine.dialect.name == "sqlite" else "TIMESTAMP WITH TIME ZONE"
+    for _column_name, _definition in {
+        "pedido_id": "INTEGER",
+        "pedido_numero": "VARCHAR(20)",
+        "atualizado_em": avaliacao_datetime_type,
+    }.items():
+        if _column_name not in _avaliacoes_cols:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE avaliacoes ADD COLUMN {_column_name} {_definition}"))
+                _conn.commit()
+
 with engine.begin() as _conn:
     _conn.execute(
         text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),
@@ -198,6 +212,7 @@ app.include_router(cupons, prefix="/api/v1")
 app.include_router(duvidas, prefix="/api/v1")
 app.include_router(pagamentos, prefix="/api/v1")
 app.include_router(banners, prefix="/api/v1")
+app.include_router(avaliacoes, prefix="/api/v1")
 app.include_router(admin, prefix="/api/v1")
 app.include_router(email_admin_router, prefix="/api/v1")
 
