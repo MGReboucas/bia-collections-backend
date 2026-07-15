@@ -23,7 +23,7 @@ from app.services.upload_service import (
 )
 from app.models.avaliacao import Avaliacao
 from app.models.banner import Banner
-from app.models.cupom import Cupom, CupomUsado
+from app.models.cupom import Cupom, CupomResgatado, CupomUsado
 from app.models.duvida import Duvida
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido, ItemPedido
@@ -1356,11 +1356,15 @@ def atualizar_cupom_admin(
     if exists:
         raise HTTPException(status_code=409, detail="Cupom ja cadastrado.")
 
-    # Não permitir alterar código se já tiver usos registrados
-    if cupom.codigo != data.codigo and cupom.total_usos > 0:
+    # O código salvo na carteira da cliente precisa continuar identificando o mesmo cupom.
+    possui_vinculos = (
+        db.query(CupomUsado).filter(CupomUsado.cupom_id == cupom.id).first()
+        or db.query(CupomResgatado).filter(CupomResgatado.cupom_id == cupom.id).first()
+    )
+    if cupom.codigo != data.codigo and possui_vinculos:
         raise HTTPException(
             status_code=409,
-            detail="Não é possível alterar o código de um cupom que já foi utilizado.",
+            detail="Não é possível alterar o código de um cupom já adicionado ou utilizado.",
         )
 
     cupom.codigo = data.codigo
@@ -1386,7 +1390,11 @@ def deletar_cupom_admin(
     if not cupom:
         raise HTTPException(status_code=404, detail="Cupom não encontrado.")
 
-    if db.query(CupomUsado).filter(CupomUsado.cupom_id == cupom.id).first():
+    possui_vinculos = (
+        db.query(CupomUsado).filter(CupomUsado.cupom_id == cupom.id).first()
+        or db.query(CupomResgatado).filter(CupomResgatado.cupom_id == cupom.id).first()
+    )
+    if possui_vinculos:
         cupom.ativo = False
         cupom.deletado_em = datetime.now(timezone.utc)
     else:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -21,6 +21,22 @@ class Cupom(Base):
     deletado_em = Column(DateTime(timezone=True), nullable=True)
 
     usos = relationship("CupomUsado", back_populates="cupom")
+    resgates = relationship("CupomResgatado", back_populates="cupom", cascade="all, delete-orphan")
+
+
+class CupomResgatado(Base):
+    __tablename__ = "cupons_resgatados"
+    __table_args__ = (
+        UniqueConstraint("cupom_id", "usuario_id", name="uq_cupom_resgatado_usuario"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    cupom_id = Column(Integer, ForeignKey("cupons.id"), nullable=False, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
+    resgatado_em = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    cupom = relationship("Cupom", back_populates="resgates")
+    usuario = relationship("Usuario", back_populates="cupons_resgatados")
 
 
 class CupomUsado(Base):

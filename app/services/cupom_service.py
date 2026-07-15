@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
-from app.models.cupom import Cupom, CupomUsado
+from app.models.cupom import Cupom, CupomResgatado, CupomUsado
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.services.frete_service import formatar_preco
@@ -98,6 +98,20 @@ def validar_cupom_para_total(
         )
         if ja_usado:
             raise HTTPException(status_code=422, detail="Cupom ja utilizado.")
+
+    foi_resgatado = (
+        db.query(CupomResgatado)
+        .filter(
+            CupomResgatado.cupom_id == cupom.id,
+            CupomResgatado.usuario_id == usuario.id,
+        )
+        .first()
+    )
+    if not foi_resgatado:
+        raise HTTPException(
+            status_code=422,
+            detail="Adicione este cupom à sua conta antes de usar.",
+        )
 
     return cupom, calcular_desconto_cupom(cupom, total, valor_frete)
 

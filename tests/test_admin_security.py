@@ -23,7 +23,7 @@ from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.avaliacao import Avaliacao
 from app.models.reset_senha import ResetSenha
 from app.models.banner import Banner
-from app.models.cupom import Cupom, CupomUsado
+from app.models.cupom import Cupom, CupomResgatado, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
@@ -1276,7 +1276,7 @@ def test_payload_token_e_cookie_manipulados_nao_liberam_admin(client):
 
 
 def test_criar_pedido_inclui_frete_e_cupom_frete(client):
-    create_user("cliente-pedido", "cliente-pedido@example.com")
+    usuario_id = create_user("cliente-pedido", "cliente-pedido@example.com")
     db = SessionLocal()
     try:
         produto = Produto(nome="Bolsa checkout", preco=100.0, ativo=True)
@@ -1289,6 +1289,8 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
             ativo=True,
         )
         db.add_all([produto, cupom])
+        db.flush()
+        db.add(CupomResgatado(cupom_id=cupom.id, usuario_id=usuario_id))
         db.commit()
         produto_id = produto.id
     finally:
@@ -1331,6 +1333,118 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
         assert db.query(Cupom).filter(Cupom.codigo == "FRETE").one().total_usos == 0
     finally:
         db.close()
+
+
+def test_cliente_adiciona_cupom_ao_perfil_antes_de_usar(client):
+    create_user("cliente-cupom", "cliente-cupom@example.com")
+    create_user("outra-cliente-cupom", "outra-cliente-cupom@example.com")
+    db = SessionLocal()
+    try:
+        db.add(
+            Cupom(
+                codigo="SOCIAL15",
+                descricao="Cupom divulgado nas redes sociais",
+                tipo="porcentagem",
+                valor=15.0,
+                validade=datetime.now(timezone.utc).date() + timedelta(days=5),
+                ativo=True,
+                valor_minimo_pedido=50.0,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    headers = auth_headers("cliente-cupom")
+    sem_resgate = client.get("/api/v1/cupons", headers=headers)
+    assert sem_resgate.status_code == 200
+    assert sem_resgate.json() == {"ativos": [], "usados": []}
+
+    validacao_antes = client.post(
+        "/api/v1/cupons/validar",
+        json={"codigo": "SOCIAL15", "total": 100.0},
+        headers=headers,
+    )
+    assert validacao_antes.status_code == 200
+    assert validacao_antes.json()["valido"] is False
+    assert "adicione" in validacao_antes.json()["mensagem"].lower()
+
+    sem_login = client.post("/api/v1/cupons/adicionar", json={"codigo": "SOCIAL15"})
+    assert sem_login.status_code == 401
+
+    adicionado = client.post(
+        "/api/v1/cupons/adicionar",
+        json={"codigo": "  social15  "},
+        headers=headers,
+    )
+    assert adicionado.status_code == 200
+    assert adicionado.json()["ja_adicionado"] is False
+    assert adicionado.json()["cupom"]["codigo"] == "SOCIAL15"
+    assert adicionado.json()["cupom"]["valor_minimo_pedido"] == 50.0
+
+    repetido = client.post(
+        "/api/v1/cupons/adicionar",
+        json={"codigo": "SOCIAL15"},
+        headers=headers,
+    )
+    assert repetido.status_code == 200
+    assert repetido.json()["ja_adicionado"] is True
+
+    carteira = client.get("/api/v1/cupons", headers=headers)
+    assert carteira.status_code == 200
+    assert [cupom["codigo"] for cupom in carteira.json()["ativos"]] == ["SOCIAL15"]
+
+    outra_carteira = client.get(
+        "/api/v1/cupons",
+        headers=auth_headers("outra-cliente-cupom"),
+    )
+    assert outra_carteira.status_code == 200
+    assert outra_carteira.json()["ativos"] == []
+
+    validacao_depois = client.post(
+        "/api/v1/cupons/validar",
+        json={"codigo": "SOCIAL15", "total": 100.0},
+        headers=headers,
+    )
+    assert validacao_depois.status_code == 200
+    assert validacao_depois.json()["valido"] is True
+    assert validacao_depois.json()["valor_desconto"] == 15.0
+
+
+@pytest.mark.parametrize(
+    ("codigo", "ativo", "dias_validade"),
+    [
+        ("INATIVO", False, 5),
+        ("EXPIRADO", True, -1),
+    ],
+)
+def test_cliente_nao_adiciona_cupom_indisponivel(client, codigo, ativo, dias_validade):
+    username = f"cliente-{codigo.lower()}"
+    create_user(username, f"{codigo.lower()}@example.com")
+    db = SessionLocal()
+    try:
+        db.add(
+            Cupom(
+                codigo=codigo,
+                descricao="Cupom indisponivel",
+                tipo="valor",
+                valor=10.0,
+                validade=datetime.now(timezone.utc).date() + timedelta(days=dias_validade),
+                ativo=ativo,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/cupons/adicionar",
+        json={"codigo": codigo},
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 422
+    assert "inativo, expirado ou esgotado" in response.json()["detail"]
 
 
 def test_criar_pedido_usa_preco_promocional_quando_existir(client):

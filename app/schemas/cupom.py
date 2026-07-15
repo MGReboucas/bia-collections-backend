@@ -8,6 +8,8 @@ class CupomAtivo(BaseModel):
     tipo: str
     valor: str
     validade: str
+    valor_minimo_pedido: float = 0.0
+    resgatado_em: Optional[str] = None
 
 
 class CupomUsadoResponse(BaseModel):
@@ -22,6 +24,24 @@ class CupomUsadoResponse(BaseModel):
 class CuponsResponse(BaseModel):
     ativos: List[CupomAtivo]
     usados: List[CupomUsadoResponse]
+
+
+class AdicionarCupomRequest(BaseModel):
+    codigo: str
+
+    @field_validator("codigo")
+    @classmethod
+    def normalizar_codigo(cls, value: str) -> str:
+        value = value.strip().upper()
+        if not value:
+            raise ValueError("Código do cupom é obrigatório.")
+        return value
+
+
+class AdicionarCupomResponse(BaseModel):
+    mensagem: str
+    ja_adicionado: bool = False
+    cupom: CupomAtivo
 
 
 class ValidarCupomRequest(BaseModel):
