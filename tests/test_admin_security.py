@@ -1122,12 +1122,12 @@ def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypat
         data=data,
         files=[
             ("imagens", (f"imagem-{index}.webp", b"img", "image/webp"))
-            for index in range(9)
+            for index in range(11)
         ],
         headers=headers,
     )
     assert too_many.status_code == 422
-    assert "maximo 8 imagens" in too_many.json()["detail"]
+    assert "maximo 10 imagens" in too_many.json()["detail"]
 
     invalid_type = client.post(
         "/api/v1/admin/produtos",
@@ -1152,6 +1152,55 @@ def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypat
     )
     assert oversized.status_code == 422
     assert "5 MB" in oversized.json()["detail"]
+
+
+def test_master_admin_atualiza_produto_valida_limite_total_da_galeria(client, monkeypatch):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    image_urls = [f"/uploads/produtos/existente-{index}.webp" for index in range(9)]
+    db = SessionLocal()
+    try:
+        produto = Produto(
+            nome="Produto galeria limite",
+            preco=59.9,
+            imagem_url=image_urls[0],
+            ativo=True,
+            imagens=[
+                ProdutoImagem(
+                    imagem_url=image_url,
+                    ordem=index,
+                    principal=index == 0,
+                )
+                for index, image_url in enumerate(image_urls)
+            ],
+        )
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    async def fail_upload_image(file, folder):
+        raise AssertionError("Upload nao deve ocorrer quando a validacao falha")
+
+    monkeypatch.setattr(admin_module, "upload_image", fail_upload_image)
+
+    response = client.put(
+        f"/api/v1/admin/produtos/{produto_id}",
+        data={
+            "nome": "Produto galeria limite",
+            "preco": "59.9",
+            "ativo": "true",
+            "imagens_manter": json.dumps(image_urls),
+        },
+        files=[
+            ("imagens", ("nova-1.webp", b"img", "image/webp")),
+            ("imagens", ("nova-2.webp", b"img", "image/webp")),
+        ],
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 422
+    assert "maximo 10 imagens" in response.json()["detail"]
 
 
 def test_listar_produtos_filtra_categoria_por_slug_normalizado(client):

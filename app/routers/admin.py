@@ -53,7 +53,7 @@ router = APIRouter(
     dependencies=[Depends(get_current_master_admin_user)],
 )
 
-MAX_PRODUCT_IMAGES = 8
+MAX_PRODUCT_IMAGES = 10
 PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
 
 
@@ -375,10 +375,7 @@ def _infer_upload_content_type(file: UploadFile) -> str:
 
 async def _validate_product_images(files: List[UploadFile]) -> None:
     if len(files) > MAX_PRODUCT_IMAGES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Envie no maximo {MAX_PRODUCT_IMAGES} imagens por produto.",
-        )
+        _raise_product_image_limit_error()
 
     for index, file in enumerate(files, start=1):
         content_type = _infer_upload_content_type(file)
@@ -395,6 +392,31 @@ async def _validate_product_images(files: List[UploadFile]) -> None:
                 detail=f"Imagem {index}: tamanho maximo permitido e 5 MB.",
             )
         await file.seek(0)
+
+
+def _raise_product_image_limit_error() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail=f"Envie no maximo {MAX_PRODUCT_IMAGES} imagens por produto.",
+    )
+
+
+def _validate_product_image_total(total: int) -> None:
+    if total > MAX_PRODUCT_IMAGES:
+        _raise_product_image_limit_error()
+
+
+def _selected_product_images_count(
+    produto: Produto,
+    kept_urls: set[str] | None,
+) -> int:
+    if kept_urls is None:
+        return len(produto.imagens or [])
+    return sum(
+        1
+        for imagem in produto.imagens or []
+        if _normalize_image_url(imagem.imagem_url) in kept_urls
+    )
 
 
 async def _save_product_images(files: List[UploadFile]) -> List[str]:
@@ -524,6 +546,8 @@ def _sync_product_images(
             cor_nome=metadata.get("cor_nome") if metadata else None,
         )
         final_images.append(imagem)
+
+    _validate_product_image_total(len(final_images))
 
     final_images.sort(key=lambda imagem: (imagem.ordem if imagem.ordem is not None else 0, imagem.id or 0))
     for index, imagem in enumerate(final_images):
@@ -1185,7 +1209,6 @@ async def atualizar_produto(
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
 
     image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
-    image_urls = await _save_product_images(image_files) if image_files else []
     legacy_image_metadata = _image_metadata(
         modelos=modelos,
         modelos_nomes=modelos_nomes,
@@ -1217,6 +1240,14 @@ async def atualizar_produto(
             explicit_principal_index is not None,
         ]
     )
+
+    image_urls: list[str] = []
+    if should_sync_images:
+        _validate_product_image_total(
+            _selected_product_images_count(produto, keep_urls) + len(image_files)
+        )
+    if image_files:
+        image_urls = await _save_product_images(image_files)
 
     produto.nome = nome.strip()
     descricao_limpa = _clean_optional_text(descricao)
