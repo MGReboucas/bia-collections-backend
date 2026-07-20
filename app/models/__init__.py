@@ -5,7 +5,7 @@ from app.models.two_factor import TwoFactorChallenge  # noqa: F401
 from app.models.produto import Categoria, Produto, ProdutoImagem  # noqa: F401
 from app.models.pedido import Pedido, ItemPedido  # noqa: F401
 from app.models.endereco import Endereco  # noqa: F401
-from app.models.cupom import Cupom, CupomUsado  # noqa: F401
+from app.models.cupom import Cupom, CupomResgatado, CupomUsado  # noqa: F401
 from app.models.duvida import Duvida  # noqa: F401
 from app.models.pagamento import Pagamento  # noqa: F401
 from app.models.avaliacao import Avaliacao, AvaliacaoFoto  # noqa: F401

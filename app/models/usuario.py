@@ -21,6 +21,7 @@ class Usuario(Base):
     pedidos = relationship("Pedido", back_populates="usuario")
     enderecos = relationship("Endereco", back_populates="usuario")
     cupons_usados = relationship("CupomUsado", back_populates="usuario")
+    cupons_resgatados = relationship("CupomResgatado", back_populates="usuario", cascade="all, delete-orphan")
     duvidas = relationship("Duvida", back_populates="usuario")
     desafios_2fa = relationship("TwoFactorChallenge", back_populates="usuario", cascade="all, delete-orphan")
     avaliacoes = relationship("Avaliacao", back_populates="usuario")
