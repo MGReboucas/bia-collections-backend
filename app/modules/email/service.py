@@ -16,6 +16,7 @@ from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.modules.email.models import EmailAutomation, EmailLog, EmailTemplate
 from app.modules.email.provider import EmailProvider
+from app.modules.email.templates import ensure_brand_logo_html
 
 try:
     from jinja2 import BaseLoader, Environment
@@ -243,10 +244,13 @@ class EmailAutomationService:
         if not template:
             raise ValueError(f"Template de email nao encontrado: {template_slug}")
 
+        html_content = self._render_string(template.html_template, payload, html_escape=True)
+        html_content = ensure_brand_logo_html(html_content) or ""
+
         return RenderedEmail(
             subject=self._render_string(template.subject, payload, html_escape=False),
             preheader=self._render_string(template.preheader or "", payload, html_escape=False) or None,
-            html=self._render_string(template.html_template, payload, html_escape=True),
+            html=html_content,
             text=self._render_string(template.text_template, payload, html_escape=False),
         )
 
@@ -301,6 +305,7 @@ class EmailAutomationService:
         return log
 
     def send_email(self, to: str, subject: str, html_content: str, text_content: str) -> None:
+        html_content = ensure_brand_logo_html(html_content) or ""
         self.provider.send(to=to, subject=subject, html=html_content, text=text_content)
 
     def save_email_log(self, **values: Any) -> EmailLog:
@@ -339,6 +344,7 @@ class EmailAutomationService:
 
         try:
             log.attempts = (log.attempts or 0) + 1
+            log.html_snapshot = ensure_brand_logo_html(log.html_snapshot)
             result = self.provider.send(
                 to=log.email,
                 subject=log.subject or "",

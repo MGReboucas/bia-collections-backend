@@ -7,7 +7,11 @@ from email.utils import parseaddr
 import httpx
 
 from app.core.config import settings
-from app.modules.email.templates import password_reset_code_email, two_factor_code_email
+from app.modules.email.templates import (
+    ensure_brand_logo_html,
+    password_reset_code_email,
+    two_factor_code_email,
+)
 
 
 EMAIL_TIMEOUT_SECONDS = 15
@@ -148,6 +152,7 @@ def _send_brevo_email(destinatario: str, subject: str, text: str | None = None, 
 
 
 def _send_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> None:
+    html = ensure_brand_logo_html(html)
     provider = _provider()
     if provider == "resend":
         _send_resend_email(destinatario, subject, text=text, html=html)

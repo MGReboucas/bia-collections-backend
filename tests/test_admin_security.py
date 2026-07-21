@@ -517,6 +517,8 @@ def test_envio_por_resend_usa_api_http_quando_api_key_configurada(monkeypatch):
     assert captured["json"]["from"] == "Bia Collections <sender@example.com>"
     assert captured["json"]["to"] == ["cliente@example.com"]
     assert captured["json"]["subject"] == "Seu codigo de acesso - Bia Collections"
+    assert 'data-bia-email-logo="true"' in captured["json"]["html"]
+    assert "bia-collections-logooficial.png" in captured["json"]["html"]
     assert "123456" in captured["json"]["text"]
 
 
@@ -558,6 +560,8 @@ def test_envio_por_brevo_usa_api_http_quando_configurado(monkeypatch):
     assert captured["json"]["sender"] == {"name": "Bia Collections", "email": "sender@example.com"}
     assert captured["json"]["to"] == [{"email": "cliente@example.com"}]
     assert captured["json"]["subject"] == "Seu codigo de acesso - Bia Collections"
+    assert 'data-bia-email-logo="true"' in captured["json"]["htmlContent"]
+    assert "bia-collections-logooficial.png" in captured["json"]["htmlContent"]
     assert "123456" in captured["json"]["textContent"]
 
 
@@ -2535,6 +2539,8 @@ def assert_email_log_snapshot(
     assert log.status == status_log
     assert log.subject is not None and subject_contains in log.subject
     assert log.html_snapshot is not None and html_contains in log.html_snapshot
+    assert 'data-bia-email-logo="true"' in log.html_snapshot
+    assert "bia-collections-logooficial.png" in log.html_snapshot
     assert log.text_snapshot is not None and text_contains in log.text_snapshot
     payload = json.loads(log.payload_json or "{}")
     for key, value in payload_values.items():
@@ -3061,7 +3067,9 @@ def test_admin_emails_envia_teste_substituindo_variaveis(client, monkeypatch):
     assert response.json() == {"message": "Email de teste enviado."}
     assert enviado["to"] == "cliente@example.com"
     assert enviado["subject"] == "Pedido 000123 para Bia"
-    assert enviado["html"] == "<strong>Bia</strong> - R$ 149,90"
+    assert "<strong>Bia</strong> - R$ 149,90" in enviado["html"]
+    assert 'data-bia-email-logo="true"' in enviado["html"]
+    assert "bia-collections-logooficial.png" in enviado["html"]
 
 
 def test_seed_cria_templates_padrao_do_painel_admin(client):
@@ -3091,9 +3099,10 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert by_event["codigo_acesso"]["status"] == "ativo"
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
-    assert "Bia" in by_event["pedido_criado"]["html"]
-    assert "COLLECTIONS" in by_event["pedido_criado"]["html"]
-    assert "ACESSORIOS FEMININOS" in by_event["pedido_criado"]["html"]
+    assert 'data-bia-email-logo="true"' in by_event["pedido_criado"]["html"]
+    assert "bia-collections-logooficial.png" in by_event["pedido_criado"]["html"]
+    assert "Bia Collections" in by_event["pedido_criado"]["html"]
+    assert "ACESSORIOS FEMININOS" not in by_event["pedido_criado"]["html"]
     assert "background: #111111" in by_event["pedido_criado"]["html"]
 
     seed_email_automation()

@@ -30,6 +30,8 @@ render-email-*.env
 # Uploads (user files — keep folder, ignore contents)
 uploads/*
 !uploads/.gitkeep
+!uploads/email/
+!uploads/email/bia-collections-logooficial.png
 
 # Logs
 *.log

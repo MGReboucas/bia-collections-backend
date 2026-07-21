@@ -15,6 +15,7 @@ from app.models.usuario import Usuario
 from app.modules.email.models import EmailTemplate
 from app.modules.email.provider import EmailProvider
 from app.modules.email.service import EmailAutomationService
+from app.modules.email.templates import ensure_brand_logo_html
 from app.schemas.admin_emails import (
     AdminEmailEnviarManualPayload,
     AdminEmailManualLogOut,
@@ -337,7 +338,9 @@ def enviar_teste_template_email(
         raise _error(404, "Template nao encontrado.")
 
     subject = _render_template(template.subject, data.variaveis)
-    html = _render_template(template.html or template.html_template, data.variaveis)
+    html = ensure_brand_logo_html(
+        _render_template(template.html or template.html_template, data.variaveis)
+    ) or ""
     try:
         EmailProvider().send(
             to=data.email_destino,

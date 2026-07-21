@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html as html_lib
+import re
 from dataclasses import dataclass
 
 
@@ -10,6 +12,25 @@ BRAND_COLORS = {
     "nude": "#E7D2BB",
     "gold": "#C8A96B",
 }
+
+BRAND_EMAIL_LOGO_PATH = "/uploads/email/bia-collections-logooficial.png"
+BRAND_EMAIL_LOGO_FILENAME = "bia-collections-logooficial.png"
+
+_LEGACY_HEADER_LOGO_RE = re.compile(
+    r'<td align="center" style="padding: 38px 28px 18px; border-bottom: 1px solid #eee8df;">\s*'
+    r'<div style="font-family: Georgia,[\s\S]*?</div>\s*'
+    r'<div style="font-family: Arial,[\s\S]*?>COLLECTIONS</div>\s*'
+    r'<div style="width: 54px;[\s\S]*?</div>\s*'
+    r'<div style="font-family: Arial,[\s\S]*?>ACESSORIOS FEMININOS</div>\s*'
+    r"</td>",
+    re.IGNORECASE,
+)
+_LEGACY_FOOTER_LOGO_RE = re.compile(
+    r'\s*<div style="font-family: Georgia,[^"]*font-size: 28px; line-height: 30px;">Bia</div>\s*'
+    r'<div style="font-family: Arial,[^"]*font-size: 10px; letter-spacing: 4px; margin-top: 4px;">'
+    r"COLLECTIONS</div>",
+    re.IGNORECASE,
+)
 
 
 ECOMMERCE_EMAIL_EVENTS = [
@@ -98,6 +119,78 @@ class BrandEmailMessage:
     html: str
 
 
+def _clean(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _join_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def brand_email_logo_url() -> str:
+    from app.core.config import settings
+
+    configured_url = _clean(settings.EMAIL_LOGO_URL)
+    if configured_url:
+        return configured_url
+
+    for base_url in (settings.MP_NOTIFICATION_URL, settings.STORE_URL, settings.FRONTEND_URL):
+        base_url = _clean(base_url)
+        if base_url:
+            return _join_url(base_url, BRAND_EMAIL_LOGO_PATH)
+    return BRAND_EMAIL_LOGO_PATH
+
+
+def brand_email_logo_img(*, width: int = 260) -> str:
+    src = html_lib.escape(brand_email_logo_url(), quote=True)
+    return (
+        f'<img data-bia-email-logo="true" src="{src}" width="{width}" '
+        'alt="Bia Collections" '
+        f'style="display: block; width: {width}px; max-width: 100%; height: auto; '
+        'margin: 0 auto; border: 0; outline: none; text-decoration: none;">'
+    )
+
+
+def brand_email_logo_cell() -> str:
+    return (
+        '<td align="center" style="padding: 34px 28px 22px; border-bottom: 1px solid #eee8df;">'
+        f"{brand_email_logo_img(width=260)}"
+        "</td>"
+    )
+
+
+def brand_email_logo_block() -> str:
+    return (
+        '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">'
+        '<tr><td align="center" style="padding: 24px 0 20px;">'
+        f"{brand_email_logo_img(width=260)}"
+        "</td></tr></table>"
+    )
+
+
+def ensure_brand_logo_html(value: str | None) -> str | None:
+    if not value:
+        return value
+    if 'data-bia-email-logo="true"' in value or BRAND_EMAIL_LOGO_FILENAME in value:
+        return value
+
+    updated = _LEGACY_HEADER_LOGO_RE.sub(brand_email_logo_cell(), value, count=1)
+    updated = _LEGACY_FOOTER_LOGO_RE.sub("", updated)
+    if 'data-bia-email-logo="true"' in updated or BRAND_EMAIL_LOGO_FILENAME in updated:
+        return updated
+
+    logo_block = brand_email_logo_block()
+    if re.search(r"<body\b[^>]*>", updated, flags=re.IGNORECASE):
+        return re.sub(
+            r"(<body\b[^>]*>)",
+            rf"\1{logo_block}",
+            updated,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return f"{logo_block}{updated}"
+
+
 def brand_email_html(
     *,
     title: str,
@@ -147,12 +240,7 @@ def brand_email_html(
         <td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width: 620px; background: {BRAND_COLORS['white']}; border: 1px solid #e8e1d8;">
             <tr>
-              <td align="center" style="padding: 38px 28px 18px; border-bottom: 1px solid #eee8df;">
-                <div style="font-family: Georgia, 'Times New Roman', serif; font-size: 58px; line-height: 58px; color: {BRAND_COLORS['black']}; letter-spacing: 0;">Bia</div>
-                <div style="font-family: Arial, Helvetica, sans-serif; font-size: 12px; letter-spacing: 5px; color: {BRAND_COLORS['black']}; margin-top: 6px;">COLLECTIONS</div>
-                <div style="width: 54px; height: 1px; background: {BRAND_COLORS['gold']}; margin: 18px auto 12px;"></div>
-                <div style="font-family: Arial, Helvetica, sans-serif; font-size: 10px; letter-spacing: 4px; color: #6f6a64;">ACESSORIOS FEMININOS</div>
-              </td>
+              {brand_email_logo_cell()}
             </tr>
             <tr>
               <td style="padding: 34px 36px 8px;">
@@ -169,9 +257,7 @@ def brand_email_html(
             {cta_block}
             <tr>
               <td style="padding: 24px 36px 36px; background: {BRAND_COLORS['black']}; color: {BRAND_COLORS['white']}; text-align: center;">
-                <div style="font-family: Georgia, 'Times New Roman', serif; font-size: 28px; line-height: 30px;">Bia</div>
-                <div style="font-family: Arial, Helvetica, sans-serif; font-size: 10px; letter-spacing: 4px; margin-top: 4px;">COLLECTIONS</div>
-                <p style="margin: 18px 0 0; font-family: Arial, Helvetica, sans-serif; font-size: 12px; line-height: 20px; color: #d9d2ca;">{footer}</p>
+                <p style="margin: 0; font-family: Arial, Helvetica, sans-serif; font-size: 12px; line-height: 20px; color: #d9d2ca;">{footer}</p>
               </td>
             </tr>
           </table>

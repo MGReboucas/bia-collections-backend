@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     EMAIL_PROVIDER: str = "auto"  # auto, resend, brevo, smtp
     EMAIL_FROM_NAME: str = "Bia Collections"
     EMAIL_FROM: str = ""
+    EMAIL_LOGO_URL: str = ""
     STORE_NAME: str = "Bia Collections"
     STORE_URL: str = ""
 
