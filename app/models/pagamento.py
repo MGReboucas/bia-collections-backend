@@ -15,6 +15,7 @@ class Pagamento(Base):
     idempotency_key = Column(String(120), nullable=True, index=True)
     # PIX
     mp_payment_id = Column(String(100), nullable=True, index=True)
+    mp_order_id = Column(String(100), nullable=True, index=True)
     pix_qr_code = Column(String(2000), nullable=True)       # copia-e-cola
     pix_qr_code_base64 = Column(String(5000), nullable=True)  # imagem
     pix_expiracao = Column(DateTime(timezone=True), nullable=True)

@@ -1670,6 +1670,14 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     assert payment["payment_method"] == {"id": "pix", "type": "bank_transfer"}
     assert email_events == []
 
+    db = SessionLocal()
+    try:
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000001").one()
+        assert pagamento.mp_order_id == "ord_pix_1"
+        assert pagamento.mp_payment_id == "pay_pix_1"
+    finally:
+        db.close()
+
 
 def test_pagamento_pix_traduz_erro_credenciais_live():
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
@@ -2102,6 +2110,174 @@ def test_webhook_cartao_metadata_atualiza_pagamento_e_pedido(client, monkeypatch
     finally:
         db.close()
     assert email_events == [("payment_approved", "0000006")]
+
+
+def test_webhook_pix_order_processed_atualiza_pedido_e_pagamento(client, monkeypatch):
+    create_user("cliente-webhook-pix", "cliente-webhook-pix@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-webhook-pix").one()
+        pedido = Pedido(
+            numero="0000007",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="pix",
+            subtotal=70.0,
+            valor_frete=5.0,
+            total=75.0,
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            Pagamento(
+                pedido_numero=pedido.numero,
+                tipo="pix",
+                valor=75.0,
+                status="pendente",
+                mp_payment_id="pay_pix_order",
+                mp_order_id="ord_pix_paid",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    def fake_consultar_order_mp(order_id):
+        assert order_id == "ord_pix_paid"
+        return 200, {
+            "id": "ord_pix_paid",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "0000007",
+            "total_amount": "75.00",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_pix_order",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {"id": "pix", "type": "bank_transfer"},
+                    }
+                ]
+            },
+        }
+
+    email_events = []
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module, "_consultar_order_mp", fake_consultar_order_mp)
+    monkeypatch.setattr(
+        pagamentos_module,
+        "trigger_order_email_event",
+        lambda db, event_key, pedido: email_events.append((event_key, pedido.numero)),
+    )
+
+    response = client.post(
+        "/api/v1/pagamentos/webhook?type=order&data.id=ord_pix_paid",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000007").one()
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000007").one()
+        assert pedido.status == "Pagamento aprovado"
+        assert pagamento.tipo == "pix"
+        assert pagamento.status == "aprovado"
+        assert pagamento.mp_status == "processed"
+        assert pagamento.mp_payment_id == "pay_pix_order"
+        assert pagamento.mp_order_id == "ord_pix_paid"
+    finally:
+        db.close()
+    assert email_events == [("payment_approved", "0000007")]
+
+
+def test_status_pix_pendente_busca_order_por_referencia_sem_order_id(client, monkeypatch):
+    create_user("cliente-status-pix", "cliente-status-pix@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-status-pix").one()
+        pedido = Pedido(
+            numero="0000008",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="pix",
+            subtotal=45.0,
+            valor_frete=5.0,
+            total=50.0,
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            Pagamento(
+                pedido_numero=pedido.numero,
+                tipo="pix",
+                valor=50.0,
+                status="pendente",
+                mp_payment_id="pay_pix_old",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    def fake_buscar_order_mp_por_referencia(external_reference, criado_em):
+        assert external_reference == "0000008"
+        assert criado_em is not None
+        return {
+            "id": "ord_pix_found",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "0000008",
+            "total_amount": "50.00",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_pix_found",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {"id": "pix", "type": "bank_transfer"},
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(
+        pagamentos_module,
+        "_buscar_order_mp_por_referencia",
+        fake_buscar_order_mp_por_referencia,
+    )
+
+    response = client.get(
+        "/api/v1/pagamentos/status/0000008",
+        headers=auth_headers("cliente-status-pix"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pago"] is True
+    assert body["status_pedido"] == "Pagamento aprovado"
+    assert body["pagamento"]["status"] == "aprovado"
+    assert body["pagamento"]["mp_status"] == "processed"
+    assert body["pagamento"]["payment_id"] == "pay_pix_found"
+    assert body["pagamento"]["order_id"] == "ord_pix_found"
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000008").one()
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000008").one()
+        assert pedido.status == "Pagamento aprovado"
+        assert pagamento.mp_order_id == "ord_pix_found"
+    finally:
+        db.close()
 
 
 def test_assinatura_webhook_fallback_valida_hmac():

@@ -180,6 +180,46 @@ def _consultar_order_mp(order_id: str) -> tuple[int, dict]:
     return response.status_code, body
 
 
+def _formatar_data_mp(data: datetime) -> str:
+    return data.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _buscar_order_mp_por_referencia(external_reference: str, criado_em: datetime | None) -> dict | None:
+    data_base = _normalizar_datetime(criado_em) or datetime.now(timezone.utc)
+    inicio = data_base.astimezone(timezone.utc) - timedelta(days=1)
+    fim = datetime.now(timezone.utc) + timedelta(days=1)
+    headers = {
+        "accept": "application/json",
+        "Authorization": f"Bearer {settings.MP_ACCESS_TOKEN}",
+    }
+    params = {
+        "external_reference": external_reference,
+        "begin_date": _formatar_data_mp(inicio),
+        "end_date": _formatar_data_mp(fim),
+        "type": "online",
+    }
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.get(MP_ORDERS_URL, headers=headers, params=params)
+    except httpx.HTTPError:
+        logger.exception("Erro de comunicacao ao buscar order no Mercado Pago")
+        return None
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if response.status_code not in (200, 201):
+        logger.warning(
+            "Mercado Pago recusou busca de order: status=%s response=%s",
+            response.status_code,
+            body,
+        )
+        return None
+    data = body.get("data") or body.get("results") or []
+    return data[0] if data else None
+
+
 def _extrair_pix_order(response: dict) -> dict:
     payments = response.get("transactions", {}).get("payments") or []
     payment = payments[0] if payments else {}
@@ -201,8 +241,11 @@ def _extrair_pix_order(response: dict) -> dict:
 def _extrair_payment_from_order(response: dict) -> dict:
     pix_data = _extrair_pix_order(response)
     return {
+        "order_id": pix_data["order_id"],
         "payment_id": pix_data["payment_id"],
+        "status": pix_data["status"],
         "mp_status": pix_data["status"],
+        "status_detail": response.get("status_detail") or "",
         "external_reference": response.get("external_reference") or "",
         "transaction_amount": response.get("total_amount") or 0.0,
         "payment_method_id": "pix",
@@ -271,6 +314,16 @@ def _extrair_payment_id(request: Request, data: dict) -> str:
     )
 
 
+def _extrair_notification_type(request: Request, data: dict) -> str | None:
+    value = (
+        request.query_params.get("type")
+        or request.query_params.get("topic")
+        or (data.get("type") if data else None)
+        or (data.get("topic") if data else None)
+    )
+    return str(value) if value else None
+
+
 def _validar_assinatura_webhook(request: Request, data: dict, payment_id: str) -> None:
     if not settings.MP_WEBHOOK_SECRET:
         return
@@ -334,7 +387,10 @@ def _pagamento_payload(pagamento: Pagamento | None) -> dict | None:
         "status": pagamento.status,
         "mp_status": pagamento.mp_status,
         "payment_id": pagamento.mp_payment_id,
+        "order_id": pagamento.mp_order_id,
         "preference_id": pagamento.mp_preference_id,
+        "valor": pagamento.valor,
+        "atualizado_em": pagamento.atualizado_em,
         "pix_expiracao": pagamento.pix_expiracao,
         "checkout_url": pagamento.checkout_url,
         "checkout_url_prod": pagamento.checkout_url_prod,
@@ -345,6 +401,12 @@ def _buscar_pagamento_existente(db: Session, response: dict, payment_id: str) ->
     pagamento = None
     if payment_id:
         pagamento = db.query(Pagamento).filter(Pagamento.mp_payment_id == payment_id).first()
+    if pagamento:
+        return pagamento
+
+    order_id = response.get("order_id")
+    if order_id:
+        pagamento = db.query(Pagamento).filter(Pagamento.mp_order_id == str(order_id)).first()
     if pagamento:
         return pagamento
 
@@ -389,6 +451,92 @@ def _registrar_cupom_pagamento_aprovado(db: Session, pedido: Pedido) -> None:
             pedido_id=pedido.id,
         )
     )
+
+
+def _atualizar_pagamento_local(
+    db: Session,
+    response: dict,
+    payment_id: str = "",
+    pagamento: Pagamento | None = None,
+    pedido: Pedido | None = None,
+) -> tuple[Pedido | None, Pagamento | None, str | None]:
+    payment_id = str(payment_id or response.get("payment_id") or response.get("id") or "")
+    pagamento = pagamento or _buscar_pagamento_existente(db, response, payment_id)
+    external_ref = _external_reference_pagamento(response, pagamento)
+    if not external_ref:
+        return None, pagamento, None
+
+    mp_status = str(response.get("status") or response.get("mp_status") or "")
+    novo_status_pedido = MP_TO_ORDER_STATUS.get(mp_status)
+    novo_status_pagamento = MP_TO_PAYMENT_STATUS.get(mp_status, mp_status or "pendente")
+    tipo = _tipo_pagamento_mp(response)
+    order_id = str(response.get("order_id") or "")
+
+    pedido = pedido or db.query(Pedido).filter(Pedido.numero == external_ref).first()
+    if pedido and novo_status_pedido:
+        if not (pedido.status in ORDER_STATUSES_PAGOS and novo_status_pedido != ORDER_STATUS_PAGO):
+            pedido.status = novo_status_pedido
+        if novo_status_pedido == ORDER_STATUS_PAGO:
+            _registrar_cupom_pagamento_aprovado(db, pedido)
+
+    if not pagamento:
+        pagamento = (
+            db.query(Pagamento)
+            .filter(Pagamento.pedido_numero == external_ref, Pagamento.tipo == tipo)
+            .order_by(Pagamento.id.desc())
+            .first()
+        )
+    if not pagamento:
+        pagamento = Pagamento(
+            pedido_numero=external_ref,
+            tipo=tipo,
+        )
+        db.add(pagamento)
+
+    if payment_id:
+        pagamento.mp_payment_id = payment_id
+    if order_id:
+        pagamento.mp_order_id = order_id
+    pagamento.status = novo_status_pagamento
+    pagamento.mp_status = mp_status
+    pagamento.valor = float(response.get("transaction_amount") or pagamento.valor or 0.0)
+    return pedido, pagamento, mp_status
+
+
+def _sincronizar_pix_pendente(db: Session, pedido: Pedido, pagamento: Pagamento | None) -> Pagamento | None:
+    if not pagamento or pagamento.tipo != "pix" or pedido.status in ORDER_STATUSES_PAGOS:
+        return pagamento
+    if pagamento.status not in PAGAMENTOS_REABRIVEIS and pagamento.status != "expirado":
+        return pagamento
+    if not settings.MP_ACCESS_TOKEN:
+        return pagamento
+
+    order_response = None
+    if pagamento.mp_order_id:
+        result_status, order_response = _consultar_order_mp(pagamento.mp_order_id)
+        if result_status not in (200, 201):
+            logger.warning(
+                "Mercado Pago recusou consulta de order PIX: status=%s order_id=%s",
+                result_status,
+                pagamento.mp_order_id,
+            )
+            return pagamento
+    else:
+        order_response = _buscar_order_mp_por_referencia(pedido.numero, pedido.criado_em)
+        if not order_response:
+            return pagamento
+
+    response = _extrair_payment_from_order(order_response)
+    response["external_reference"] = response.get("external_reference") or pedido.numero
+    _, pagamento_atualizado, _ = _atualizar_pagamento_local(
+        db,
+        response,
+        response.get("payment_id") or "",
+        pagamento=pagamento,
+        pedido=pedido,
+    )
+    db.commit()
+    return pagamento_atualizado
 
 
 @router.post("/pix/{numero_pedido}")
@@ -487,6 +635,7 @@ def criar_pagamento_pix(
         valor=float(pedido.total),
         idempotency_key=idempotency_key,
         mp_payment_id=payment_id,
+        mp_order_id=pix_data["order_id"],
         pix_qr_code=qr_code,
         pix_qr_code_base64=qr_code_base64,
         pix_expiracao=expiracao,
@@ -690,9 +839,9 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     except Exception:
         data = {}
 
-    notification_type = data.get("type") if data else None
+    notification_type = _extrair_notification_type(request, data)
     payment_id = _extrair_payment_id(request, data)
-    if data and notification_type not in (None, "payment", "order", "merchant_order"):
+    if notification_type not in (None, "payment", "order", "merchant_order"):
         return {"status": "ignored"}
     if not payment_id:
         return {"status": "ignored"}
@@ -714,42 +863,9 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         if result.get("status") not in (200, 201):
             raise HTTPException(status_code=502, detail="Erro ao consultar pagamento.")
 
-    pagamento = _buscar_pagamento_existente(db, response, payment_id)
-    external_ref = _external_reference_pagamento(response, pagamento)
-    if not external_ref:
+    pedido, _, mp_status = _atualizar_pagamento_local(db, response, payment_id)
+    if not mp_status:
         return {"status": "ignored"}
-
-    mp_status = response.get("status") or response.get("mp_status") or ""
-    novo_status_pedido = MP_TO_ORDER_STATUS.get(mp_status)
-    novo_status_pagamento = MP_TO_PAYMENT_STATUS.get(mp_status, mp_status or "pendente")
-    tipo = _tipo_pagamento_mp(response)
-
-    pedido = db.query(Pedido).filter(Pedido.numero == external_ref).first()
-    if pedido and novo_status_pedido:
-        if not (pedido.status in ORDER_STATUSES_PAGOS and novo_status_pedido != ORDER_STATUS_PAGO):
-            pedido.status = novo_status_pedido
-        if novo_status_pedido == ORDER_STATUS_PAGO:
-            _registrar_cupom_pagamento_aprovado(db, pedido)
-
-    if not pagamento:
-        pagamento = (
-            db.query(Pagamento)
-            .filter(Pagamento.pedido_numero == external_ref, Pagamento.tipo == tipo)
-            .order_by(Pagamento.id.desc())
-            .first()
-        )
-    if not pagamento:
-        pagamento = Pagamento(
-            pedido_numero=external_ref,
-            tipo=tipo,
-            mp_payment_id=payment_id,
-        )
-        db.add(pagamento)
-
-    pagamento.mp_payment_id = payment_id
-    pagamento.status = novo_status_pagamento
-    pagamento.mp_status = mp_status
-    pagamento.valor = float(response.get("transaction_amount") or pagamento.valor or 0.0)
 
     db.commit()
     event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
@@ -778,6 +894,11 @@ def status_pagamento(
         .order_by(Pagamento.id.desc())
         .first()
     )
+    try:
+        pagamento = _sincronizar_pix_pendente(db, pedido, pagamento)
+    except HTTPException:
+        logger.exception("Erro ao sincronizar PIX pendente do pedido %s", numero_pedido)
+    db.refresh(pedido)
     return {
         "numero_pedido": numero_pedido,
         "status_pedido": pedido.status,

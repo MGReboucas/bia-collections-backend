@@ -692,6 +692,7 @@ def _pagamento_admin_response(pagamento: Pagamento | None) -> dict | None:
         "status": pagamento.status,
         "mp_status": pagamento.mp_status,
         "mp_payment_id": pagamento.mp_payment_id,
+        "mp_order_id": pagamento.mp_order_id,
         "mp_preference_id": pagamento.mp_preference_id,
         "valor": pagamento.valor,
         "atualizado_em": pagamento.atualizado_em.isoformat() if pagamento.atualizado_em else None,

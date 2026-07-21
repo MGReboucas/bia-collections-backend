@@ -47,28 +47,46 @@ ORDER_STATUSES_OPERACIONAIS = {
 
 MP_TO_ORDER_STATUS = {
     "approved": ORDER_STATUS_PAGO,
+    "processed": ORDER_STATUS_PAGO,
     "pending": ORDER_STATUS_AGUARDANDO,
     "in_process": ORDER_STATUS_AGUARDANDO,
+    "processing": ORDER_STATUS_AGUARDANDO,
+    "in_review": ORDER_STATUS_AGUARDANDO,
+    "action_required": ORDER_STATUS_AGUARDANDO,
     "rejected": ORDER_STATUS_RECUSADO,
+    "failed": ORDER_STATUS_RECUSADO,
     "cancelled": ORDER_STATUS_CANCELADO,
+    "canceled": ORDER_STATUS_CANCELADO,
+    "expired": ORDER_STATUS_EXPIRADO,
     "refunded": ORDER_STATUS_REEMBOLSADO,
     "charged_back": ORDER_STATUS_ESTORNADO,
 }
 
 MP_TO_PAYMENT_STATUS = {
     "approved": "aprovado",
+    "processed": "aprovado",
     "pending": "pendente",
     "in_process": "em_analise",
+    "processing": "em_analise",
+    "in_review": "em_analise",
+    "action_required": "pendente",
     "rejected": "recusado",
+    "failed": "recusado",
     "cancelled": "cancelado",
+    "canceled": "cancelado",
+    "expired": "expirado",
     "refunded": "reembolsado",
     "charged_back": "estornado",
 }
 
 PAYMENT_EMAIL_EVENTS = {
     "approved": "payment_approved",
+    "processed": "payment_approved",
     "rejected": "payment_refused",
+    "failed": "payment_refused",
     "cancelled": "payment_expired",
+    "canceled": "payment_expired",
+    "expired": "payment_expired",
     "refunded": "refund_completed",
     "charged_back": "payment_refused",
 }
