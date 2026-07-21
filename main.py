@@ -191,6 +191,12 @@ if "email_templates" in _table_names:
                 _conn.execute(text(f"ALTER TABLE email_templates ADD COLUMN {_column_name} {_definition}"))
                 _conn.commit()
 
+if "email_logs" in _table_names:
+    with engine.begin() as _conn:
+        _conn.execute(text("UPDATE email_logs SET status = 'pendente' WHERE status IN ('queued', 'scheduled')"))
+        _conn.execute(text("UPDATE email_logs SET status = 'enviado' WHERE status = 'sent'"))
+        _conn.execute(text("UPDATE email_logs SET status = 'erro' WHERE status = 'failed'"))
+
 with engine.begin() as _conn:
     _conn.execute(
         text("UPDATE usuarios SET is_admin = :is_admin WHERE lower(trim(email)) = :email"),

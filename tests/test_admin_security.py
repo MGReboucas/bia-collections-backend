@@ -2581,7 +2581,7 @@ def test_pedido_criado_usa_template_admin_e_registra_log_renderizado(client, mon
         log,
         event_key="pedido_criado",
         recipient="cliente-email-pedido@example.com",
-        status_log="queued",
+        status_log="pendente",
         subject_contains=f"Recebemos seu pedido {numero}",
         html_contains="Pedido recebido",
         text_contains=numero,
@@ -2682,7 +2682,7 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_admin(client, monkey
             log,
             event_key="pagamento_aprovado",
             recipient=recipient,
-            status_log="queued",
+            status_log="pendente",
             subject_contains=f"Pagamento aprovado - Pedido {numero}",
             html_contains="Pagamento aprovado",
             text_contains=numero,
@@ -2713,6 +2713,7 @@ def test_pedido_enviado_por_status_e_rastreio_sem_duplicar(client, monkeypatch):
         email="cliente-email-ship-dup@example.com",
         numero="EMAILSHIP3",
         status_pedido="Pagamento aprovado",
+        codigo_rastreio="BRDUP789",
     )
 
     status_response = client.put(
@@ -2749,7 +2750,7 @@ def test_pedido_enviado_por_status_e_rastreio_sem_duplicar(client, monkeypatch):
         by_order[status_order_id],
         event_key="pedido_enviado",
         recipient="cliente-email-ship-status@example.com",
-        status_log="queued",
+        status_log="pendente",
         subject_contains="Seu pedido EMAILSHIP1 foi enviado",
         html_contains="BRSTATUS123",
         text_contains="BRSTATUS123",
@@ -2759,13 +2760,13 @@ def test_pedido_enviado_por_status_e_rastreio_sem_duplicar(client, monkeypatch):
         by_order[tracking_order_id],
         event_key="pedido_enviado",
         recipient="cliente-email-ship-track@example.com",
-        status_log="queued",
+        status_log="pendente",
         subject_contains="Seu pedido EMAILSHIP2 foi enviado",
         html_contains="BRTRACK456",
         text_contains="BRTRACK456",
         payload_values={"pedido_numero": "EMAILSHIP2", "codigo_rastreio": "BRTRACK456"},
     )
-    assert by_order[duplicate_order_id].dedupe_key == "pedido_enviado:EMAILSHIP3"
+    assert by_order[duplicate_order_id].dedupe_key == "pedido_enviado:EMAILSHIP3:BRDUP789"
     assert "BRDUP789" in (by_order[duplicate_order_id].html_snapshot or "")
 
 
@@ -2788,7 +2789,7 @@ def test_recuperacao_senha_usa_template_admin_e_log_sent(client, monkeypatch):
         log,
         event_key="recuperacao_senha",
         recipient="cliente-email-reset@example.com",
-        status_log="sent",
+        status_log="enviado",
         subject_contains="Redefinicao de senha - Bia Collections",
         html_contains="Redefinicao de senha",
         text_contains="15",
@@ -2834,7 +2835,7 @@ def test_codigo_acesso_login_cadastro_reenviar_usa_template_admin(client, monkey
     assert len(logs) == 3
     assert len(sent) == 3
     assert [log.event_key for log in logs] == ["codigo_acesso", "codigo_acesso", "codigo_acesso"]
-    assert [log.status for log in logs] == ["sent", "sent", "sent"]
+    assert [log.status for log in logs] == ["enviado", "enviado", "enviado"]
     assert [log.template_slug for log in logs] == ["admin-default-codigo-acesso"] * 3
     assert [log.email for log in logs] == [
         "cliente-email-2fa@example.com",
@@ -2883,7 +2884,7 @@ def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypa
         log,
         event_key="cupom_disponivel",
         recipient="cliente-email-cupom@example.com",
-        status_log="queued",
+        status_log="pendente",
         subject_contains="Seu cupom EMAIL15 esta disponivel",
         html_contains="EMAIL15",
         text_contains="EMAIL15",
@@ -2946,7 +2947,7 @@ def test_admin_email_manual_envia_campanha_e_cria_logs(client, monkeypatch):
         logs_by_email["manual-target@example.com"],
         event_key="manual",
         recipient="manual-target@example.com",
-        status_log="sent",
+        status_log="enviado",
         subject_contains="Ola manual-target - VIP",
         html_contains="Oferta liberada",
         text_contains="Oferta liberada",
@@ -2956,7 +2957,7 @@ def test_admin_email_manual_envia_campanha_e_cria_logs(client, monkeypatch):
         logs_by_email["avulsa@example.com"],
         event_key="manual",
         recipient="avulsa@example.com",
-        status_log="sent",
+        status_log="enviado",
         subject_contains="Ola Avulsa - VIP",
         html_contains="Avulsa",
         text_contains="Oferta liberada",
@@ -2991,6 +2992,7 @@ def test_admin_emails_crud_e_limite_de_um_ativo_por_evento(client):
     assert body["evento"] == "pedido_criado"
     assert body["status"] == "ativo"
     assert body["html"] == payload["html"]
+    assert body["criado_em"] is not None
     assert body["atualizado_em"] is not None
 
     duplicado_ativo = client.post(
@@ -3051,7 +3053,7 @@ def test_admin_emails_envia_teste_substituindo_variaveis(client, monkeypatch):
     assert criado.status_code == 201
 
     response = client.post(
-        f"/api/v1/admin/emails/{criado.json()['id']}/teste",
+        f"/api/v1/admin/emails/{criado.json()['id']}/testar",
         json={
             "email_destino": " Cliente@Example.com ",
             "variaveis": {
@@ -3070,6 +3072,11 @@ def test_admin_emails_envia_teste_substituindo_variaveis(client, monkeypatch):
     assert "<strong>Bia</strong> - R$ 149,90" in enviado["html"]
     assert 'data-bia-email-logo="true"' in enviado["html"]
     assert "bia-collections-logooficial.png" in enviado["html"]
+    logs = email_logs()
+    assert len(logs) == 1
+    assert logs[0].event_key == "manual"
+    assert logs[0].status == "enviado"
+    assert logs[0].dedupe_key.startswith("teste:")
 
 
 def test_seed_cria_templates_padrao_do_painel_admin(client):

@@ -15,13 +15,13 @@ from app.models.reset_senha import ResetSenha
 from app.core.config import settings
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.core.email import enviar_email_codigo_acesso, enviar_email_reset
+from app.modules.email.models import EmailTemplate
 from app.modules.email.service import EmailAutomationService
 from app.services.two_factor_service import (
     CreatedTwoFactorChallenge,
     TwoFactorError,
     create_resend_challenge,
     create_two_factor_challenge,
-    invalidate_challenge,
     verify_two_factor_code,
 )
 from app.schemas.auth import (
@@ -98,7 +98,12 @@ def _set_auth_cookie(response: Response, user: Usuario) -> None:
     )
 
 
-def _send_two_factor_email_or_fail(db: Session, challenge: CreatedTwoFactorChallenge, email: str) -> None:
+def _has_admin_template_configured(db: Session, evento: str) -> bool:
+    return db.query(EmailTemplate.id).filter(EmailTemplate.evento == evento).first() is not None
+
+
+def _send_two_factor_email(db: Session, challenge: CreatedTwoFactorChallenge, email: str) -> None:
+    has_admin_template = _has_admin_template_configured(db, "codigo_acesso")
     try:
         log = EmailAutomationService(db).send_event_now(
             "two_factor_code",
@@ -115,15 +120,16 @@ def _send_two_factor_email_or_fail(db: Session, challenge: CreatedTwoFactorChall
                 "store_url": settings.STORE_URL or settings.FRONTEND_URL,
                 "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
             },
+            raise_on_failure=False,
         )
         if log:
             return
-        enviar_email_codigo_acesso(email, challenge.codigo)
+        if not has_admin_template:
+            enviar_email_codigo_acesso(email, challenge.codigo)
     except Exception:
-        invalidate_challenge(db, challenge.challenge)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Nao foi possivel enviar o e-mail. Tente novamente.",
+        logger.exception(
+            "Falha ao enviar codigo de acesso para %s",
+            _email_mascarado(email),
         )
 
 
@@ -158,7 +164,7 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
             detail="Usuário ou senha inválidos.",
         )
     challenge = create_two_factor_challenge(db, user)
-    _send_two_factor_email_or_fail(db, challenge, user.email)
+    _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Codigo enviado por e-mail.")
 
 
@@ -189,7 +195,7 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.commit()
     db.refresh(user)
     challenge = create_two_factor_challenge(db, user)
-    _send_two_factor_email_or_fail(db, challenge, user.email)
+    _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Conta criada. Codigo enviado por e-mail.")
 
 
@@ -212,7 +218,7 @@ def reenviar_2fa(data: ResendTwoFactorRequest, db: Session = Depends(get_db)):
         _raise_two_factor_error(error)
 
     user = challenge.challenge.usuario
-    _send_two_factor_email_or_fail(db, challenge, user.email)
+    _send_two_factor_email(db, challenge, user.email)
     return ResendTwoFactorResponse(
         two_factor_token=challenge.token,
         email=user.email,
@@ -257,6 +263,7 @@ def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, d
     db.add(reset)
     db.commit()
 
+    has_admin_template = _has_admin_template_configured(db, "recuperacao_senha")
     try:
         log = EmailAutomationService(db).send_event_now(
             "password_reset",
@@ -277,18 +284,14 @@ def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, d
                 "link_recuperacao": _frontend_url("/recuperar-senha"),
                 "dedupe_key": f"password_reset:{reset.id}",
             },
+            raise_on_failure=False,
         )
-        if not log:
+        if not log and not has_admin_template:
             enviar_email_reset(email, codigo)
     except Exception:
         logger.exception("Falha ao enviar email de reset para %s", _email_mascarado(email))
-        # Não expõe o erro de SMTP ao cliente
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Não foi possível enviar o e-mail. Tente novamente.",
-        )
 
-    logger.info("Email de reset enviado para %s", _email_mascarado(email))
+    logger.info("Solicitacao de reset processada para %s", _email_mascarado(email))
     return {"mensagem": "Se o e-mail existir, você receberá o código."}
 
 

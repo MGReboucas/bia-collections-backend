@@ -14,8 +14,7 @@ from app.dependencies import get_current_master_admin_user
 from app.models.usuario import Usuario
 from app.modules.email.models import EmailTemplate
 from app.modules.email.provider import EmailProvider
-from app.modules.email.service import EmailAutomationService
-from app.modules.email.templates import ensure_brand_logo_html
+from app.modules.email.service import EMAIL_STATUS_SENT, EmailAutomationService
 from app.schemas.admin_emails import (
     AdminEmailEnviarManualPayload,
     AdminEmailManualLogOut,
@@ -31,7 +30,6 @@ router = APIRouter(
     dependencies=[Depends(get_current_master_admin_user)],
 )
 
-VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_]+)\s*}}")
 EVENTO_TO_SLUG_PREFIX = {
     "pedido_criado": "pedido-criado",
     "pagamento_aprovado": "pagamento-aprovado",
@@ -88,15 +86,9 @@ def _template_out(template: EmailTemplate) -> AdminEmailTemplateOut:
         evento=template.evento,
         status=template.status or ("ativo" if template.is_active else "rascunho"),
         html=template.html or template.html_template,
+        criado_em=template.created_at,
         atualizado_em=template.updated_at,
     )
-
-
-def _render_template(value: str, variaveis: dict[str, str]) -> str:
-    def replace(match: re.Match[str]) -> str:
-        return str(variaveis.get(match.group(1), ""))
-
-    return VAR_PATTERN.sub(replace, value)
 
 
 def _html_to_text(value: str) -> str:
@@ -276,7 +268,7 @@ def enviar_template_manual(
             )
         )
 
-    enviados = sum(1 for log in logs if log.status == "sent")
+    enviados = sum(1 for log in logs if log.status == EMAIL_STATUS_SENT or log.status == "sent")
     falhas = len(logs) - enviados
     return AdminEmailManualSendResponse(
         message="Campanha manual processada.",
@@ -325,6 +317,7 @@ def deletar_template_email(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/{template_id}/testar")
 @router.post("/{template_id}/teste")
 def enviar_teste_template_email(
     template_id: int,
@@ -337,16 +330,18 @@ def enviar_teste_template_email(
     if not template or template.evento is None:
         raise _error(404, "Template nao encontrado.")
 
-    subject = _render_template(template.subject, data.variaveis)
-    html = ensure_brand_logo_html(
-        _render_template(template.html or template.html_template, data.variaveis)
-    ) or ""
     try:
-        EmailProvider().send(
-            to=data.email_destino,
-            subject=subject,
-            html=html,
-            text=re.sub(r"<[^>]+>", " ", html),
+        EmailAutomationService(db, provider=EmailProvider()).send_template_now(
+            template,
+            {
+                **data.variaveis,
+                "variaveis": data.variaveis,
+                "to": data.email_destino,
+                "email": data.email_destino,
+                "dedupe_key": f"teste:{template.id}:{data.email_destino}:{uuid4().hex}",
+            },
+            event_key=template.evento or "manual",
+            raise_on_failure=True,
         )
     except Exception as exc:
         raise _error(502, f"Falha ao enviar email de teste: {exc}") from exc

@@ -642,8 +642,17 @@ def criar_pagamento_pix(
         status=_status_pix_local(pix_data["status"]),
         mp_status=pix_data["status"],
     )
+    novo_status_pedido = MP_TO_ORDER_STATUS.get(pix_data["status"])
+    if novo_status_pedido:
+        pedido.status = novo_status_pedido
+        if novo_status_pedido == ORDER_STATUS_PAGO:
+            _registrar_cupom_pagamento_aprovado(db, pedido)
     db.add(pagamento)
     db.commit()
+    event_key = PAYMENT_EMAIL_EVENTS.get(pix_data["status"])
+    if event_key:
+        db.refresh(pedido)
+        trigger_order_email_event(db, event_key, pedido)
 
     return {
         "qr_code": qr_code,
@@ -887,6 +896,7 @@ def status_pagamento(
     ).first()
     if not pedido:
         raise HTTPException(status_code=404, detail="Pedido nao encontrado.")
+    old_status = pedido.status
 
     pagamento = (
         db.query(Pagamento)
@@ -899,6 +909,8 @@ def status_pagamento(
     except HTTPException:
         logger.exception("Erro ao sincronizar PIX pendente do pedido %s", numero_pedido)
     db.refresh(pedido)
+    if old_status not in ORDER_STATUSES_PAGOS and pedido.status in ORDER_STATUSES_PAGOS:
+        trigger_order_email_event(db, "payment_approved", pedido)
     return {
         "numero_pedido": numero_pedido,
         "status_pedido": pedido.status,

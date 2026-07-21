@@ -53,7 +53,7 @@ class EmailLog(Base):
     template_slug = Column(String(120), nullable=False, index=True)
     event_key = Column(String(120), nullable=False, index=True)
     dedupe_key = Column(String(255), nullable=True, index=True)
-    status = Column(String(40), nullable=False, default="queued", index=True)
+    status = Column(String(40), nullable=False, default="pendente", index=True)
     provider = Column(String(60), nullable=True)
     provider_message_id = Column(String(255), nullable=True)
     error_message = Column(Text, nullable=True)

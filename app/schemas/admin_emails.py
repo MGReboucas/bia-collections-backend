@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -39,12 +39,13 @@ class AdminEmailTemplateOut(BaseModel):
     evento: EmailEvento
     status: EmailStatus
     html: str
+    criado_em: datetime | None = None
     atualizado_em: datetime | None = None
 
 
 class AdminEmailTestePayload(BaseModel):
     email_destino: str
-    variaveis: dict[str, str] = Field(default_factory=dict)
+    variaveis: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("email_destino")
     @classmethod
@@ -60,7 +61,7 @@ class AdminEmailTestePayload(BaseModel):
 class AdminEmailManualRecipient(BaseModel):
     email: str
     user_id: int | None = None
-    variaveis: dict[str, str] = Field(default_factory=dict)
+    variaveis: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("email")
     @classmethod
@@ -76,7 +77,7 @@ class AdminEmailManualRecipient(BaseModel):
 class AdminEmailEnviarManualPayload(BaseModel):
     destinatarios: list[AdminEmailManualRecipient] = Field(default_factory=list)
     usuario_ids: list[int] = Field(default_factory=list)
-    variaveis: dict[str, str] = Field(default_factory=dict)
+    variaveis: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("usuario_ids")
     @classmethod

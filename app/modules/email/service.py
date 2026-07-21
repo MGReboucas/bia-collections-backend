@@ -27,7 +27,17 @@ except Exception:  # pragma: no cover - optional dependency fallback
 
 logger = logging.getLogger(__name__)
 
-QUEUED_STATUSES = {"queued", "scheduled", "sent"}
+EMAIL_STATUS_PENDING = "pendente"
+EMAIL_STATUS_SENT = "enviado"
+EMAIL_STATUS_ERROR = "erro"
+LEGACY_PENDING_STATUSES = {"queued", "scheduled"}
+LEGACY_SENT_STATUSES = {"sent"}
+LEGACY_ERROR_STATUSES = {"failed"}
+PENDING_STATUSES = {EMAIL_STATUS_PENDING, *LEGACY_PENDING_STATUSES}
+SENT_STATUSES = {EMAIL_STATUS_SENT, *LEGACY_SENT_STATUSES}
+ERROR_STATUSES = {EMAIL_STATUS_ERROR, *LEGACY_ERROR_STATUSES}
+RETRYABLE_STATUSES = PENDING_STATUSES | ERROR_STATUSES
+DEDUPE_STATUSES = PENDING_STATUSES | SENT_STATUSES | ERROR_STATUSES
 MAX_ATTEMPTS = 3
 _VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.]+)\s*}}")
 ADMIN_EVENT_TO_AUTOMATION_EVENT = {
@@ -41,6 +51,9 @@ ADMIN_EVENT_TO_AUTOMATION_EVENT = {
 AUTOMATION_EVENT_TO_ADMIN_EVENT = {
     event_key: admin_event for admin_event, event_key in ADMIN_EVENT_TO_AUTOMATION_EVENT.items()
 }
+AUTOMATION_EVENT_TO_ADMIN_EVENT.update(
+    {admin_event: admin_event for admin_event in ADMIN_EVENT_TO_AUTOMATION_EVENT}
+)
 AUTOMATION_EVENT_TO_ADMIN_EVENT["tracking_code_available"] = "pedido_enviado"
 AUTOMATION_EVENT_TO_ADMIN_EVENT["manual"] = "manual"
 
@@ -59,6 +72,7 @@ class EmailAutomationService:
         self.provider = provider or EmailProvider()
 
     def trigger_event(self, event_key: str, payload: dict[str, Any]) -> list[EmailLog]:
+        admin_event = self._admin_event_for_key(event_key)
         admin_templates = self._active_admin_templates_for_event(event_key)
         if admin_templates:
             admin_event_key, admin_payload = self._admin_event_payload(event_key, payload)
@@ -67,6 +81,9 @@ class EmailAutomationService:
                 admin_payload,
                 [(template, 0) for template in admin_templates],
             )
+        if admin_event and admin_event != "manual":
+            logger.warning("Email event %s ignored: no active admin template configured.", admin_event)
+            return []
 
         automations = (
             self.db.query(EmailAutomation)
@@ -79,18 +96,31 @@ class EmailAutomationService:
             .all()
         )
 
+        if not automations:
+            logger.warning("Email event %s ignored: no active template configured.", event_key)
+
         return self._enqueue_templates(
             event_key,
             payload,
             [(automation.template, automation.delay_minutes) for automation in automations],
         )
 
-    def send_event_now(self, event_key: str, payload: dict[str, Any]) -> EmailLog | None:
+    def send_event_now(
+        self,
+        event_key: str,
+        payload: dict[str, Any],
+        *,
+        raise_on_failure: bool = True,
+    ) -> EmailLog | None:
+        admin_event = self._admin_event_for_key(event_key)
         templates = self._active_admin_templates_for_event(event_key)
         send_event_key = event_key
         send_payload = payload
         if templates:
             send_event_key, send_payload = self._admin_event_payload(event_key, payload)
+        elif admin_event and admin_event != "manual":
+            logger.warning("Email event %s ignored: no active admin template configured.", admin_event)
+            return None
         if not templates:
             automations = (
                 self.db.query(EmailAutomation)
@@ -104,6 +134,9 @@ class EmailAutomationService:
                 .all()
             )
             templates = [automation.template for automation in automations if automation.template]
+        if not templates:
+            logger.warning("Email event %s ignored: no active template configured.", event_key)
+            return None
 
         for template in templates:
             if not template or not template.is_active:
@@ -116,9 +149,12 @@ class EmailAutomationService:
                 template,
                 send_payload,
                 event_key=send_event_key,
-                raise_on_failure=True,
+                raise_on_failure=raise_on_failure,
             )
         return None
+
+    def _admin_event_for_key(self, event_key: str) -> str | None:
+        return AUTOMATION_EVENT_TO_ADMIN_EVENT.get(event_key)
 
     def send_template_now(
         self,
@@ -141,7 +177,7 @@ class EmailAutomationService:
             template_slug=template.slug,
             event_key=log_event_key,
             dedupe_key=self._optional_text(payload.get("dedupe_key")),
-            status="queued",
+            status=EMAIL_STATUS_PENDING,
             subject=rendered.subject,
             html_snapshot=rendered.html,
             text_snapshot=rendered.text,
@@ -155,7 +191,7 @@ class EmailAutomationService:
                 html=rendered.html,
                 text=rendered.text,
             )
-            log.status = "sent"
+            log.status = EMAIL_STATUS_SENT
             log.provider = getattr(result, "provider", None) or "mock"
             log.provider_message_id = getattr(result, "provider_message_id", None)
             log.sent_at = datetime.now(timezone.utc)
@@ -165,7 +201,7 @@ class EmailAutomationService:
             self.db.refresh(log)
             return log
         except Exception as exc:
-            log.status = "failed"
+            log.status = EMAIL_STATUS_ERROR
             log.error_message = str(exc)[:2000]
             log.attempts = 1
             log.next_attempt_at = None
@@ -177,9 +213,9 @@ class EmailAutomationService:
 
     def _active_admin_templates_for_event(self, event_key: str) -> list[EmailTemplate]:
         admin_event = AUTOMATION_EVENT_TO_ADMIN_EVENT.get(event_key)
-        if not admin_event:
+        if not admin_event or admin_event == "manual":
             return []
-        return (
+        templates = (
             self.db.query(EmailTemplate)
             .filter(
                 EmailTemplate.evento == admin_event,
@@ -189,6 +225,14 @@ class EmailAutomationService:
             .order_by(EmailTemplate.updated_at.desc(), EmailTemplate.id.desc())
             .all()
         )
+        if len(templates) > 1:
+            logger.warning(
+                "Email event %s has %s active admin templates; using the most recent one.",
+                admin_event,
+                len(templates),
+            )
+            return templates[:1]
+        return templates
 
     def _admin_event_payload(self, event_key: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         admin_event = AUTOMATION_EVENT_TO_ADMIN_EVENT.get(event_key)
@@ -200,7 +244,14 @@ class EmailAutomationService:
             admin_payload.get("pedido_numero") or admin_payload.get("order_number")
         )
         if order_number:
-            admin_payload["dedupe_key"] = f"{admin_event}:{order_number}"
+            if admin_event == "pedido_enviado":
+                tracking_code = self._optional_text(
+                    admin_payload.get("codigo_rastreio") or admin_payload.get("tracking_code")
+                )
+                tracking_part = tracking_code or "sem-rastreio"
+                admin_payload["dedupe_key"] = f"{admin_event}:{order_number}:{tracking_part}"
+            else:
+                admin_payload["dedupe_key"] = f"{admin_event}:{order_number}"
         return admin_event, admin_payload
 
     def _enqueue_templates(
@@ -231,6 +282,8 @@ class EmailAutomationService:
                 delay_minutes=delay_minutes,
             )
             logs.append(log)
+        if not logs and templates_with_delay:
+            logger.warning("Email event %s ignored: no sendable active template.", event_key)
         return logs
 
     def render_template(
@@ -269,7 +322,8 @@ class EmailAutomationService:
         payload = payload or {}
         duplicate = self._find_duplicate_log(to, event_key, template_slug, payload)
         if duplicate:
-            if duplicate.status in {"queued", "scheduled"}:
+            if duplicate.status in PENDING_STATUSES:
+                duplicate.template_slug = template_slug
                 duplicate.subject = subject
                 duplicate.html_snapshot = html_content
                 duplicate.text_snapshot = text_content
@@ -280,7 +334,6 @@ class EmailAutomationService:
             return duplicate
 
         now = datetime.now(timezone.utc)
-        status = "scheduled" if delay_minutes > 0 else "queued"
         log = EmailLog(
             user_id=self._safe_int(payload.get("user_id")),
             order_id=self._safe_int(payload.get("order_id")),
@@ -288,12 +341,12 @@ class EmailAutomationService:
             template_slug=template_slug,
             event_key=event_key,
             dedupe_key=self._optional_text(payload.get("dedupe_key")),
-            status=status,
+            status=EMAIL_STATUS_PENDING,
             subject=subject,
             html_snapshot=html_content,
             text_snapshot=text_content,
             payload_json=json.dumps(payload, ensure_ascii=False, default=str),
-            next_attempt_at=now + timedelta(minutes=delay_minutes) if delay_minutes > 0 else now,
+            next_attempt_at=now + timedelta(minutes=delay_minutes) if delay_minutes > 0 else None,
         )
         self.db.add(log)
         self.db.commit()
@@ -319,12 +372,12 @@ class EmailAutomationService:
         log = self.db.query(EmailLog).filter(EmailLog.id == log_id).first()
         if not log:
             raise ValueError("Log de email nao encontrado.")
-        if log.status not in {"failed", "scheduled", "queued"}:
+        if log.status not in RETRYABLE_STATUSES:
             raise ValueError("Apenas emails pendentes ou com falha podem ser reenviados.")
 
-        log.status = "queued"
+        log.status = EMAIL_STATUS_PENDING
         log.error_message = None
-        log.next_attempt_at = datetime.now(timezone.utc)
+        log.next_attempt_at = None
         self.db.commit()
         self.db.refresh(log)
 
@@ -335,7 +388,7 @@ class EmailAutomationService:
 
     def process_queued_email(self, log_id: int) -> EmailLog | None:
         log = self.db.query(EmailLog).filter(EmailLog.id == log_id).first()
-        if not log or log.status not in {"queued", "scheduled", "failed"}:
+        if not log or log.status not in RETRYABLE_STATUSES:
             return log
 
         now = datetime.now(timezone.utc)
@@ -351,7 +404,7 @@ class EmailAutomationService:
                 html=log.html_snapshot,
                 text=log.text_snapshot,
             )
-            log.status = "sent"
+            log.status = EMAIL_STATUS_SENT
             log.provider = getattr(result, "provider", None) or "mock"
             log.provider_message_id = getattr(result, "provider_message_id", None)
             log.sent_at = now
@@ -364,14 +417,14 @@ class EmailAutomationService:
             log.error_message = str(exc)[:2000]
             if log.attempts < MAX_ATTEMPTS:
                 retry_delay = min(30, 2 ** log.attempts)
-                log.status = "scheduled"
+                log.status = EMAIL_STATUS_PENDING
                 log.next_attempt_at = now + timedelta(minutes=retry_delay)
             else:
-                log.status = "failed"
+                log.status = EMAIL_STATUS_ERROR
                 log.next_attempt_at = None
             self.db.commit()
             self.db.refresh(log)
-            if log.status == "scheduled":
+            if log.status == EMAIL_STATUS_PENDING:
                 from app.modules.email.tasks import enqueue_email_log
 
                 enqueue_email_log(log.id, delay_minutes=retry_delay)
@@ -383,7 +436,7 @@ class EmailAutomationService:
         logs = (
             self.db.query(EmailLog)
             .filter(
-                EmailLog.status == "scheduled",
+                EmailLog.status.in_(list(PENDING_STATUSES)),
                 EmailLog.next_attempt_at.isnot(None),
                 EmailLog.next_attempt_at <= now,
             )
@@ -392,7 +445,7 @@ class EmailAutomationService:
             .all()
         )
         for log in logs:
-            log.status = "queued"
+            log.status = EMAIL_STATUS_PENDING
         self.db.commit()
 
         from app.modules.email.tasks import enqueue_email_log
@@ -446,8 +499,7 @@ class EmailAutomationService:
         query = self.db.query(EmailLog).filter(
             EmailLog.email == email,
             EmailLog.event_key == event_key,
-            EmailLog.template_slug == template_slug,
-            EmailLog.status.in_(QUEUED_STATUSES),
+            EmailLog.status.in_(list(DEDUPE_STATUSES)),
         )
         if dedupe_key:
             query = query.filter(EmailLog.dedupe_key == dedupe_key)

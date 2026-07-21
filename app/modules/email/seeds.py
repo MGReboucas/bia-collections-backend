@@ -90,6 +90,13 @@ def _admin_template(
     }
 
 
+def _fill_missing_admin_template_fields(template: EmailTemplate, data: dict[str, Any]) -> None:
+    for key, value in data.items():
+        current = getattr(template, key, None)
+        if current is None or current == "":
+            setattr(template, key, value)
+
+
 EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
     _template(
         name="Boas-vindas",
@@ -545,8 +552,7 @@ def seed_email_automation(db: Session | None = None) -> None:
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
             template = session.query(EmailTemplate).filter(EmailTemplate.slug == data["slug"]).first()
             if template:
-                for key, value in data.items():
-                    setattr(template, key, value)
+                _fill_missing_admin_template_fields(template, data)
                 continue
 
             exists_for_event = (
