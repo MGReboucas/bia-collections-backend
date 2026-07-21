@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import hmac
 import logging
@@ -17,6 +18,7 @@ from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.modules.email.service import trigger_order_email_event
+from app.schemas.pedido import PagamentoCartaoRequest, PagamentoCartaoResponse
 from app.services.cupom_service import reservar_uso_cupom
 from app.services.payment_status import (
     MP_TO_ORDER_STATUS,
@@ -93,6 +95,15 @@ def _idempotency_key(numero_pedido: str, tipo: str) -> str:
 
 def _formatar_valor_mp(valor: float) -> str:
     return f"{float(valor):.2f}"
+
+
+def _validar_valor_pagamento(valor_enviado: float, valor_pedido: float) -> None:
+    diferenca = abs(Decimal(str(valor_enviado)) - Decimal(str(valor_pedido)))
+    if diferenca > Decimal("0.01"):
+        raise HTTPException(
+            status_code=422,
+            detail="valor divergente entre pagamento e pedido. Recalcule o pedido antes de pagar.",
+        )
 
 
 def _mensagem_erro_mp(response: dict) -> str:
@@ -307,7 +318,7 @@ def _validar_assinatura_webhook(request: Request, data: dict, payment_id: str) -
 
 def _tipo_pagamento_mp(response: dict) -> str:
     metadata = response.get("metadata") or {}
-    if metadata.get("payment_flow") in {"pix", "checkout_pro"}:
+    if metadata.get("payment_flow") in {"pix", "checkout_pro", "cartao"}:
         return metadata["payment_flow"]
     if response.get("payment_method_id") == "pix":
         return "pix"
@@ -502,6 +513,89 @@ def criar_pagamento_pix(
         "expiracao": expiracao,
         "status": pagamento.status,
     }
+
+
+@router.post("/cartao/{numero_pedido}", response_model=PagamentoCartaoResponse)
+def criar_pagamento_cartao(
+    numero_pedido: str,
+    data: PagamentoCartaoRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    pedido = db.query(Pedido).filter(
+        Pedido.numero == numero_pedido,
+        Pedido.usuario_id == current_user.id,
+    ).first()
+    if not pedido:
+        raise HTTPException(status_code=404, detail="Pedido nao encontrado.")
+    _validar_pedido_para_novo_pagamento(pedido)
+    _validar_valor_pagamento(data.transaction_amount, pedido.total)
+
+    sdk = _get_sdk()
+    idempotency_key = _idempotency_key(numero_pedido, "cartao")
+    payment_data = {
+        "transaction_amount": float(pedido.total),
+        "token": data.token,
+        "description": f"Bia Collections - Pedido {pedido.numero}",
+        "installments": data.installments,
+        "payment_method_id": data.payment_method_id,
+        "issuer_id": data.issuer_id,
+        "payer": {
+            "email": data.payer.email,
+            "identification": data.payer.identification.model_dump(),
+        },
+        "external_reference": pedido.numero,
+        "metadata": {
+            "pedido_numero": pedido.numero,
+            "payment_flow": "cartao",
+        },
+    }
+    notification_url = _notification_url()
+    if notification_url:
+        payment_data["notification_url"] = notification_url
+
+    result = _criar_recurso_mp(sdk.payment(), payment_data, idempotency_key)
+    response = result.get("response", {})
+    if result.get("status") not in (200, 201):
+        raise HTTPException(
+            status_code=502,
+            detail=f"Erro ao processar pagamento: {_mensagem_erro_mp(response)}",
+        )
+
+    payment_id = str(response.get("id") or "")
+    mp_status = response.get("status") or "pending"
+    status_pagamento = MP_TO_PAYMENT_STATUS.get(mp_status, mp_status or "pendente")
+    novo_status_pedido = MP_TO_ORDER_STATUS.get(mp_status)
+    if novo_status_pedido:
+        pedido.status = novo_status_pedido
+        if novo_status_pedido == ORDER_STATUS_PAGO:
+            _registrar_cupom_pagamento_aprovado(db, pedido)
+
+    pagamento = Pagamento(
+        pedido_numero=numero_pedido,
+        tipo="cartao",
+        valor=float(pedido.total),
+        idempotency_key=idempotency_key,
+        mp_payment_id=payment_id,
+        status=status_pagamento,
+        mp_status=mp_status,
+    )
+    db.add(pagamento)
+    db.commit()
+
+    event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
+    if event_key:
+        db.refresh(pedido)
+        trigger_order_email_event(db, event_key, pedido)
+
+    return PagamentoCartaoResponse(
+        payment_id=payment_id,
+        status=status_pagamento,
+        mp_status=mp_status,
+        status_detail=response.get("status_detail"),
+        status_pedido=pedido.status,
+        payment_method_id=str(response.get("payment_method_id") or data.payment_method_id),
+    )
 
 
 @router.post("/preferencia/{numero_pedido}")

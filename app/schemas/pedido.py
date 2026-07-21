@@ -52,6 +52,58 @@ class CriarPedidoResponse(BaseModel):
     status: str
 
 
+class PagamentoCartaoIdentificacao(BaseModel):
+    type: str
+    number: str
+
+    @field_validator("type", "number")
+    @classmethod
+    def campo_obrigatorio(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("Identificacao do pagador e obrigatoria.")
+        return value
+
+
+class PagamentoCartaoPagador(BaseModel):
+    email: str
+    identification: PagamentoCartaoIdentificacao
+
+    @field_validator("email")
+    @classmethod
+    def email_obrigatorio(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("Email do pagador e obrigatorio.")
+        return value
+
+
+class PagamentoCartaoRequest(BaseModel):
+    token: str
+    payment_method_id: str
+    issuer_id: str
+    installments: int = Field(..., ge=1)
+    transaction_amount: float = Field(..., gt=0)
+    payer: PagamentoCartaoPagador
+
+    @field_validator("token", "payment_method_id", "issuer_id")
+    @classmethod
+    def campo_obrigatorio(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("Dados do cartao incompletos.")
+        return value
+
+
+class PagamentoCartaoResponse(BaseModel):
+    payment_id: str
+    status: str
+    mp_status: str
+    status_detail: Optional[str] = None
+    status_pedido: str
+    payment_method_id: str
+
+
 class PedidoListItem(BaseModel):
     numero: str
     data: str

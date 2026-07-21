@@ -1682,6 +1682,247 @@ def test_pagamento_pix_traduz_erro_credenciais_live():
     assert "Unauthorized use of live credentials" in message
 
 
+def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkeypatch):
+    create_user("cliente-cartao", "cliente-cartao@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-cartao").one()
+        pedido = Pedido(
+            numero="0000003",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="cartao",
+            subtotal=100.0,
+            valor_frete=12.5,
+            total=112.5,
+        )
+        db.add(pedido)
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    creates = []
+
+    class FakePaymentResource:
+        def create(self, payload, options=None):
+            creates.append({"payload": payload, "options": options})
+            return {
+                "status": 201,
+                "response": {
+                    "id": "pay_card_approved",
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "payment_method_id": "visa",
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            assert token == "token"
+
+        def payment(self):
+            return FakePaymentResource()
+
+    email_events = []
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_NOTIFICATION_URL", "https://api.example.test")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(
+        pagamentos_module,
+        "trigger_order_email_event",
+        lambda db, event_key, pedido: email_events.append((event_key, pedido.numero)),
+    )
+
+    payload = {
+        "token": "card-token",
+        "payment_method_id": "visa",
+        "issuer_id": "25",
+        "installments": 2,
+        "transaction_amount": 112.5,
+        "payer": {
+            "email": "pagador@example.com",
+            "identification": {"type": "CPF", "number": "12345678909"},
+        },
+    }
+    response = client.post(
+        "/api/v1/pagamentos/cartao/0000003",
+        json=payload,
+        headers=auth_headers("cliente-cartao"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "payment_id": "pay_card_approved",
+        "status": "aprovado",
+        "mp_status": "approved",
+        "status_detail": "accredited",
+        "status_pedido": "Pagamento aprovado",
+        "payment_method_id": "visa",
+    }
+    assert len(creates) == 1
+    mp_payload = creates[0]["payload"]
+    assert mp_payload["transaction_amount"] == 112.5
+    assert mp_payload["token"] == "card-token"
+    assert mp_payload["description"] == "Bia Collections - Pedido 0000003"
+    assert mp_payload["installments"] == 2
+    assert mp_payload["payment_method_id"] == "visa"
+    assert mp_payload["issuer_id"] == "25"
+    assert mp_payload["payer"] == payload["payer"]
+    assert mp_payload["external_reference"] == "0000003"
+    assert mp_payload["metadata"] == {"pedido_numero": "0000003", "payment_flow": "cartao"}
+    assert mp_payload["notification_url"] == "https://api.example.test/api/v1/pagamentos/webhook"
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000003").one()
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000003").one()
+        assert pedido.status == "Pagamento aprovado"
+        assert pagamento.tipo == "cartao"
+        assert pagamento.valor == 112.5
+        assert pagamento.status == "aprovado"
+        assert pagamento.mp_status == "approved"
+        assert pagamento.mp_payment_id == "pay_card_approved"
+        assert pagamento.idempotency_key.startswith("bia-cartao-0000003-")
+    finally:
+        db.close()
+    assert email_events == [("payment_approved", "0000003")]
+
+
+def test_pagamento_cartao_valor_divergente_retorna_422(client, monkeypatch):
+    create_user("cliente-cartao-divergente", "cliente-cartao-divergente@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-cartao-divergente").one()
+        db.add(
+            Pedido(
+                numero="0000004",
+                usuario_id=user.id,
+                status="Aguardando pagamento",
+                forma_pagamento="cartao",
+                subtotal=80.0,
+                valor_frete=10.0,
+                total=90.0,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+
+    response = client.post(
+        "/api/v1/pagamentos/cartao/0000004",
+        json={
+            "token": "card-token",
+            "payment_method_id": "visa",
+            "issuer_id": "25",
+            "installments": 1,
+            "transaction_amount": 85.0,
+            "payer": {
+                "email": "pagador@example.com",
+                "identification": {"type": "CPF", "number": "12345678909"},
+            },
+        },
+        headers=auth_headers("cliente-cartao-divergente"),
+    )
+
+    assert response.status_code == 422
+    assert "valor divergente" in response.json()["detail"]
+
+
+def test_pagamento_cartao_recusado_permite_nova_tentativa(client, monkeypatch):
+    create_user("cliente-cartao-recusado", "cliente-cartao-recusado@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-cartao-recusado").one()
+        db.add(
+            Pedido(
+                numero="0000005",
+                usuario_id=user.id,
+                status="Aguardando pagamento",
+                forma_pagamento="cartao",
+                subtotal=70.0,
+                valor_frete=0.0,
+                total=70.0,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    create_count = 0
+
+    class FakePaymentResource:
+        def create(self, payload, options=None):
+            nonlocal create_count
+            create_count += 1
+            return {
+                "status": 201,
+                "response": {
+                    "id": f"pay_card_rejected_{create_count}",
+                    "status": "rejected",
+                    "status_detail": "cc_rejected_other_reason",
+                    "payment_method_id": payload["payment_method_id"],
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            assert token == "token"
+
+        def payment(self):
+            return FakePaymentResource()
+
+    email_events = []
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(
+        pagamentos_module,
+        "trigger_order_email_event",
+        lambda db, event_key, pedido: email_events.append((event_key, pedido.numero)),
+    )
+
+    payload = {
+        "token": "card-token",
+        "payment_method_id": "master",
+        "issuer_id": "30",
+        "installments": 1,
+        "transaction_amount": 70.0,
+        "payer": {
+            "email": "pagador@example.com",
+            "identification": {"type": "CPF", "number": "12345678909"},
+        },
+    }
+    headers = auth_headers("cliente-cartao-recusado")
+    first = client.post("/api/v1/pagamentos/cartao/0000005", json=payload, headers=headers)
+    second = client.post("/api/v1/pagamentos/cartao/0000005", json=payload, headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "recusado"
+    assert first.json()["status_pedido"] == "Pagamento recusado"
+    assert second.status_code == 200
+    assert second.json()["status"] == "recusado"
+    assert create_count == 2
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000005").one()
+        pagamentos = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000005").all()
+        assert pedido.status == "Pagamento recusado"
+        assert len(pagamentos) == 2
+        assert all(pagamento.tipo == "cartao" for pagamento in pagamentos)
+    finally:
+        db.close()
+    assert email_events == [
+        ("payment_refused", "0000005"),
+        ("payment_refused", "0000005"),
+    ]
+
+
 def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
     create_user("cliente-webhook", "cliente-webhook@example.com")
     db = SessionLocal()
@@ -1771,6 +2012,95 @@ def test_webhook_aprovado_atualiza_pedido_e_pagamento(client, monkeypatch):
         assert db.query(Cupom).filter(Cupom.codigo == "WEBHOOK10").one().total_usos == 1
     finally:
         db.close()
+
+
+def test_webhook_cartao_metadata_atualiza_pagamento_e_pedido(client, monkeypatch):
+    create_user("cliente-webhook-cartao", "cliente-webhook-cartao@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-webhook-cartao").one()
+        pedido = Pedido(
+            numero="0000006",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="cartao",
+            subtotal=120.0,
+            valor_frete=0.0,
+            total=120.0,
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            Pagamento(
+                pedido_numero=pedido.numero,
+                tipo="cartao",
+                valor=120.0,
+                status="pendente",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    class FakePaymentResource:
+        def get(self, payment_id):
+            assert payment_id == "pay_card_webhook"
+            return {
+                "status": 200,
+                "response": {
+                    "id": payment_id,
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "payment_method_id": "visa",
+                    "transaction_amount": 120.0,
+                    "external_reference": "0000006",
+                    "metadata": {
+                        "pedido_numero": "0000006",
+                        "payment_flow": "cartao",
+                    },
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            self.token = token
+
+        def payment(self):
+            return FakePaymentResource()
+
+    email_events = []
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(
+        pagamentos_module,
+        "trigger_order_email_event",
+        lambda db, event_key, pedido: email_events.append((event_key, pedido.numero)),
+    )
+
+    response = client.post(
+        "/api/v1/pagamentos/webhook",
+        json={"type": "payment", "data": {"id": "pay_card_webhook"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000006").one()
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000006").one()
+        assert pedido.status == "Pagamento aprovado"
+        assert pagamento.tipo == "cartao"
+        assert pagamento.status == "aprovado"
+        assert pagamento.mp_status == "approved"
+        assert pagamento.mp_payment_id == "pay_card_webhook"
+        assert pagamento.valor == 120.0
+    finally:
+        db.close()
+    assert email_events == [("payment_approved", "0000006")]
 
 
 def test_assinatura_webhook_fallback_valida_hmac():
