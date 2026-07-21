@@ -57,6 +57,7 @@ if "pagamentos" in set(inspect(engine).get_table_names()):
         "tipo": "VARCHAR(30) NOT NULL DEFAULT 'pix'",
         "valor": "FLOAT",
         "idempotency_key": "VARCHAR(120)",
+        "mp_order_id": "VARCHAR(100)",
         "mp_status": "VARCHAR(50)",
     }.items():
         if _column_name not in _pagamentos_cols:
@@ -73,6 +74,11 @@ if "pagamentos" in set(inspect(engine).get_table_names()):
                         )
                     )
                 _conn.commit()
+    _pagamentos_indexes = {index["name"] for index in inspect(engine).get_indexes("pagamentos")}
+    if "ix_pagamentos_mp_order_id" not in _pagamentos_indexes:
+        with engine.connect() as _conn:
+            _conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pagamentos_mp_order_id ON pagamentos (mp_order_id)"))
+            _conn.commit()
 
 _cupons_cols = {col["name"] for col in inspect(engine).get_columns("cupons")}
 if "max_usos" not in _cupons_cols:
