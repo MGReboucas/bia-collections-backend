@@ -1662,8 +1662,9 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     assert len(creates) == 1
     assert creates[0]["total_amount"] == "60.00"
     assert creates[0]["external_reference"] == "0000001"
-    assert creates[0]["notification_url"] == "https://api.example.test/api/v1/pagamentos/webhook"
-    assert creates[0]["metadata"] == {"pedido_numero": "0000001", "payment_flow": "pix"}
+    assert creates[0]["payer"] == {"email": "cliente-pix@example.com"}
+    assert "notification_url" not in creates[0]
+    assert "metadata" not in creates[0]
     payment = creates[0]["transactions"]["payments"][0]
     assert payment["amount"] == "60.00"
     assert payment["payment_method"] == {"id": "pix", "type": "bank_transfer"}

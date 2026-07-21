@@ -435,18 +435,12 @@ def criar_pagamento_pix(
         )
     expiracao = _data_expiracao_pix()
     idempotency_key = _idempotency_key(numero_pedido, "pix")
-    nome_partes = (current_user.nome_completo or current_user.username).split(" ", 1)
     valor = _formatar_valor_mp(pedido.total)
 
     order_data = {
         "type": "online",
         "total_amount": valor,
         "external_reference": pedido.numero,
-        "notification_url": _notification_url(),
-        "metadata": {
-            "pedido_numero": pedido.numero,
-            "payment_flow": "pix",
-        },
         "processing_mode": "automatic",
         "transactions": {
             "payments": [
@@ -461,12 +455,8 @@ def criar_pagamento_pix(
         },
         "payer": {
             "email": current_user.email,
-            "first_name": nome_partes[0],
-            "last_name": nome_partes[1] if len(nome_partes) > 1 else "",
         },
     }
-    if not order_data["notification_url"]:
-        order_data.pop("notification_url")
 
     result_status, response = _criar_order_pix_mp(order_data, idempotency_key)
     if result_status not in (200, 201):
