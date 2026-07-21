@@ -23,6 +23,7 @@ from app.services.cupom_service import (
     normalizar_codigo_cupom,
 )
 from app.services.frete_service import formatar_preco
+from app.modules.email.service import trigger_coupon_available_email_event
 
 router = APIRouter(prefix="/cupons", tags=["cupons"])
 
@@ -153,6 +154,7 @@ def adicionar_cupom_a_conta(
             ja_adicionado = True
         else:
             db.refresh(existente)
+            trigger_coupon_available_email_event(db, cupom, current_user)
 
     return AdicionarCupomResponse(
         mensagem="Cupom já estava na sua conta." if ja_adicionado else "Cupom adicionado à sua conta.",

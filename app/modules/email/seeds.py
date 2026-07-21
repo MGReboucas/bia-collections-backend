@@ -55,22 +55,37 @@ def _admin_template(
     slug: str,
     evento: str,
     assunto: str,
-    html: str,
+    title: str,
+    preheader: str,
+    intro: str,
+    body_html: str,
+    text_template: str,
+    variables: tuple[str, ...],
     status: str = "ativo",
+    cta_label: str | None = None,
+    cta_url: str | None = None,
 ) -> dict[str, Any]:
-    text_template = " ".join(html.replace("\n", " ").split())
+    html = brand_email_html(
+        title=title,
+        preheader=preheader,
+        intro=intro,
+        body_html=body_html,
+        cta_label=cta_label,
+        cta_url=cta_url,
+    )
     return {
         "nome": nome,
         "name": nome,
         "slug": slug,
         "category": evento,
         "subject": assunto,
+        "preheader": preheader,
         "evento": evento,
         "status": status,
         "html": html,
         "html_template": html,
         "text_template": text_template,
-        "variables_schema": "{}",
+        "variables_schema": _schema(*variables),
         "is_active": status == "ativo",
     }
 
@@ -361,112 +376,111 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         slug="admin-default-pedido-criado",
         evento="pedido_criado",
         assunto="Recebemos seu pedido {{pedido_numero}}",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Pedido recebido</h1>
-      <p>Ola {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}.</p>
-      <p>Total do pedido: <strong>{{pedido_total}}</strong>.</p>
-      <p>Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>
-      <p>{{loja_nome}}</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Pedido recebido",
+        preheader="Seu pedido foi criado na Bia Collections.",
+        intro="Ola {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px;\">Total do pedido: <strong>{{pedido_total}}</strong>.</p>"
+            "<p style=\"margin: 0;\">Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>"
+        ),
+        text_template=(
+            "Ola {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}. "
+            "Total do pedido: {{pedido_total}}. Assim que o pagamento for confirmado, vamos preparar tudo com cuidado."
+        ),
+        variables=("cliente_nome", "pedido_numero", "pedido_total", "loja_nome", "loja_url"),
     ),
     _admin_template(
         nome="Pagamento aprovado",
         slug="admin-default-pagamento-aprovado",
         evento="pagamento_aprovado",
         assunto="Pagamento aprovado - Pedido {{pedido_numero}}",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Pagamento aprovado</h1>
-      <p>Ola {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado.</p>
-      <p>Total confirmado: <strong>{{pedido_total}}</strong>.</p>
-      <p>Agora vamos separar seus produtos e avisar quando o pedido for enviado.</p>
-      <p>{{loja_nome}}</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Pagamento aprovado",
+        preheader="Seu pagamento foi confirmado.",
+        intro="Ola {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px;\">Total confirmado: <strong>{{pedido_total}}</strong>.</p>"
+            "<p style=\"margin: 0;\">Agora vamos separar seus produtos e avisar quando o pedido for enviado.</p>"
+        ),
+        text_template=(
+            "Ola {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado. "
+            "Total confirmado: {{pedido_total}}. Agora vamos separar seus produtos."
+        ),
+        variables=("cliente_nome", "pedido_numero", "pedido_total", "loja_nome", "loja_url"),
     ),
     _admin_template(
         nome="Pedido enviado",
         slug="admin-default-pedido-enviado",
         evento="pedido_enviado",
         assunto="Seu pedido {{pedido_numero}} foi enviado",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Pedido enviado</h1>
-      <p>Ola {{cliente_nome}}, seu pedido {{pedido_numero}} saiu para entrega.</p>
-      <p>Codigo de rastreio: <strong>{{codigo_rastreio}}</strong></p>
-      <p>Obrigada por comprar com a {{loja_nome}}.</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Pedido enviado",
+        preheader="Seu pedido saiu para transporte.",
+        intro="Ola {{cliente_nome}}, seu pedido {{pedido_numero}} saiu para entrega.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px;\">Codigo de rastreio: <strong>{{codigo_rastreio}}</strong></p>"
+            "<p style=\"margin: 0;\">Obrigada por comprar com a {{loja_nome}}.</p>"
+        ),
+        text_template=(
+            "Ola {{cliente_nome}}, seu pedido {{pedido_numero}} saiu para entrega. "
+            "Codigo de rastreio: {{codigo_rastreio}}. Obrigada por comprar com a {{loja_nome}}."
+        ),
+        variables=("cliente_nome", "pedido_numero", "codigo_rastreio", "loja_nome", "loja_url"),
     ),
     _admin_template(
         nome="Recuperacao de senha",
         slug="admin-default-recuperacao-senha",
         evento="recuperacao_senha",
         assunto="Redefinicao de senha - {{loja_nome}}",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Redefinicao de senha</h1>
-      <p>Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha.</p>
-      <p>Use o codigo abaixo para continuar:</p>
-      <p style="font-size:24px; letter-spacing:6px;"><strong>{{codigo}}</strong></p>
-      <p>Este codigo expira em {{minutos_expiracao}} minutos.</p>
-      <p>Se voce nao solicitou isso, ignore este email.</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Redefinicao de senha",
+        preheader="Use o codigo enviado para criar uma nova senha.",
+        intro="Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px; text-align: center;\">Use o codigo abaixo para continuar:</p>"
+            "<p style=\"margin: 0 0 16px; text-align: center; font-size: 24px; letter-spacing: 6px; color: #111111;\">"
+            "<strong>{{codigo}}</strong></p>"
+            "<p style=\"margin: 0; text-align: center;\">Este codigo expira em {{minutos_expiracao}} minutos.</p>"
+        ),
+        text_template=(
+            "Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha. "
+            "Use o codigo {{codigo}}. Este codigo expira em {{minutos_expiracao}} minutos."
+        ),
+        variables=("cliente_nome", "codigo", "minutos_expiracao", "loja_nome", "loja_url", "link_recuperacao"),
     ),
     _admin_template(
         nome="Codigo de acesso",
         slug="admin-default-codigo-acesso",
         evento="codigo_acesso",
         assunto="Seu codigo de acesso - {{loja_nome}}",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Seu codigo de acesso</h1>
-      <p>Use o codigo abaixo para concluir seu acesso com seguranca.</p>
-      <p style="font-size:24px; letter-spacing:6px;"><strong>{{codigo}}</strong></p>
-      <p>Este codigo expira em {{minutos_expiracao}} minutos.</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Seu codigo de acesso",
+        preheader="Use este codigo para concluir seu acesso.",
+        intro="Use o codigo abaixo para concluir seu acesso com seguranca.",
+        body_html=(
+            "<p style=\"margin: 0 0 16px; text-align: center; font-size: 24px; letter-spacing: 6px; color: #111111;\">"
+            "<strong>{{codigo}}</strong></p>"
+            "<p style=\"margin: 0; text-align: center;\">Este codigo expira em {{minutos_expiracao}} minutos.</p>"
+        ),
+        text_template=(
+            "Seu codigo de acesso e {{codigo}}. Este codigo expira em {{minutos_expiracao}} minutos."
+        ),
+        variables=("codigo", "minutos_expiracao", "loja_nome", "loja_url"),
     ),
     _admin_template(
         nome="Cupom disponivel",
         slug="admin-default-cupom-disponivel",
         evento="cupom_disponivel",
         assunto="Seu cupom {{cupom_codigo}} esta disponivel",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Cupom disponivel</h1>
-      <p>Ola {{cliente_nome}}, voce tem um cupom para usar na {{loja_nome}}.</p>
-      <p>Codigo do cupom: <strong>{{cupom_codigo}}</strong></p>
-      <p>Aproveite enquanto ele estiver disponivel.</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Cupom disponivel",
+        preheader="Seu cupom ja esta liberado.",
+        intro="Ola {{cliente_nome}}, voce tem um cupom para usar na {{loja_nome}}.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px; text-align: center;\">Codigo do cupom: "
+            "<strong>{{cupom_codigo}}</strong></p>"
+            "<p style=\"margin: 0; text-align: center;\">Aproveite enquanto ele estiver disponivel.</p>"
+        ),
+        text_template=(
+            "Ola {{cliente_nome}}, voce tem um cupom para usar na {{loja_nome}}. "
+            "Codigo do cupom: {{cupom_codigo}}. Aproveite enquanto ele estiver disponivel."
+        ),
+        variables=("cliente_nome", "cupom_codigo", "cupom_descricao", "cupom_valor", "cupom_validade", "loja_nome", "loja_url"),
     ),
     _admin_template(
         nome="Email manual",
@@ -474,17 +488,15 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         evento="manual",
         assunto="Mensagem da {{loja_nome}}",
         status="rascunho",
-        html="""
-<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-  <tr>
-    <td>
-      <h1>Ola {{cliente_nome}}</h1>
-      <p>Escreva aqui a mensagem que deseja enviar manualmente.</p>
-      <p>{{loja_nome}}</p>
-    </td>
-  </tr>
-</table>
-""".strip(),
+        title="Ola {{cliente_nome}}",
+        preheader="Uma mensagem especial da Bia Collections.",
+        intro="Preparamos uma mensagem especial para voce.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px;\">Escreva aqui a mensagem que deseja enviar manualmente.</p>"
+            "<p style=\"margin: 0;\">{{loja_nome}}</p>"
+        ),
+        text_template="Ola {{cliente_nome}}. Escreva aqui a mensagem que deseja enviar manualmente. {{loja_nome}}",
+        variables=("cliente_nome", "loja_nome", "loja_url"),
     ),
 ]
 
@@ -531,15 +543,18 @@ def seed_email_automation(db: Session | None = None) -> None:
             templates_by_slug[data["slug"]] = template
 
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
+            template = session.query(EmailTemplate).filter(EmailTemplate.slug == data["slug"]).first()
+            if template:
+                for key, value in data.items():
+                    setattr(template, key, value)
+                continue
+
             exists_for_event = (
                 session.query(EmailTemplate)
                 .filter(EmailTemplate.evento == data["evento"])
                 .first()
             )
-            if exists_for_event:
-                continue
-            template = session.query(EmailTemplate).filter(EmailTemplate.slug == data["slug"]).first()
-            if not template:
+            if not exists_for_event:
                 session.add(EmailTemplate(**data))
 
         for event_key, template_slug, delay_minutes in AUTOMATION_SEEDS:

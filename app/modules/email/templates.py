@@ -131,7 +131,7 @@ def brand_email_html(
           </tr>
         """
 
-    footer = footer_note or "Se voce nao solicitou esta mensagem, ignore este e-mail com seguranca."
+    footer = footer_note or "Se voce nao solicitou esta mensagem, ignore este e-mail."
 
     return f"""<!doctype html>
 <html lang="pt-BR">

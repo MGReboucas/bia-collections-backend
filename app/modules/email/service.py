@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
+from app.models.cupom import Cupom
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.modules.email.models import EmailAutomation, EmailLog, EmailTemplate
@@ -40,6 +41,7 @@ AUTOMATION_EVENT_TO_ADMIN_EVENT = {
     event_key: admin_event for admin_event, event_key in ADMIN_EVENT_TO_AUTOMATION_EVENT.items()
 }
 AUTOMATION_EVENT_TO_ADMIN_EVENT["tracking_code_available"] = "pedido_enviado"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["manual"] = "manual"
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,12 @@ class EmailAutomationService:
     def trigger_event(self, event_key: str, payload: dict[str, Any]) -> list[EmailLog]:
         admin_templates = self._active_admin_templates_for_event(event_key)
         if admin_templates:
-            return self._enqueue_templates(event_key, payload, [(template, 0) for template in admin_templates])
+            admin_event_key, admin_payload = self._admin_event_payload(event_key, payload)
+            return self._enqueue_templates(
+                admin_event_key,
+                admin_payload,
+                [(template, 0) for template in admin_templates],
+            )
 
         automations = (
             self.db.query(EmailAutomation)
@@ -79,6 +86,10 @@ class EmailAutomationService:
 
     def send_event_now(self, event_key: str, payload: dict[str, Any]) -> EmailLog | None:
         templates = self._active_admin_templates_for_event(event_key)
+        send_event_key = event_key
+        send_payload = payload
+        if templates:
+            send_event_key, send_payload = self._admin_event_payload(event_key, payload)
         if not templates:
             automations = (
                 self.db.query(EmailAutomation)
@@ -96,51 +107,72 @@ class EmailAutomationService:
         for template in templates:
             if not template or not template.is_active:
                 continue
-            to = self._recipient_from_payload(payload)
+            to = self._recipient_from_payload(send_payload)
             if not to:
-                logger.warning("Email event %s ignored: missing recipient.", event_key)
+                logger.warning("Email event %s ignored: missing recipient.", send_event_key)
                 return None
-
-            rendered = self.render_template(template.slug, payload, template=template)
-            log = self.save_email_log(
-                user_id=self._safe_int(payload.get("user_id")),
-                order_id=self._safe_int(payload.get("order_id")),
-                email=to,
-                template_slug=template.slug,
-                event_key=event_key,
-                dedupe_key=self._optional_text(payload.get("dedupe_key")),
-                status="queued",
-                subject=rendered.subject,
-                html_snapshot=rendered.html,
-                text_snapshot=rendered.text,
-                payload_json=json.dumps(payload, ensure_ascii=False, default=str),
-                next_attempt_at=datetime.now(timezone.utc),
+            return self.send_template_now(
+                template,
+                send_payload,
+                event_key=send_event_key,
+                raise_on_failure=True,
             )
-            try:
-                result = self.provider.send(
-                    to=to,
-                    subject=rendered.subject,
-                    html=rendered.html,
-                    text=rendered.text,
-                )
-                log.status = "sent"
-                log.provider = result.provider
-                log.provider_message_id = result.provider_message_id
-                log.sent_at = datetime.now(timezone.utc)
-                log.attempts = 1
-                log.next_attempt_at = None
-                self.db.commit()
-                self.db.refresh(log)
-                return log
-            except Exception as exc:
-                log.status = "failed"
-                log.error_message = str(exc)[:2000]
-                log.attempts = 1
-                log.next_attempt_at = None
-                self.db.commit()
-                self.db.refresh(log)
-                raise
         return None
+
+    def send_template_now(
+        self,
+        template: EmailTemplate,
+        payload: dict[str, Any],
+        *,
+        event_key: str | None = None,
+        raise_on_failure: bool = True,
+    ) -> EmailLog:
+        to = self._recipient_from_payload(payload)
+        if not to:
+            raise ValueError("Destinatario de email ausente.")
+
+        log_event_key = event_key or template.evento or "manual"
+        rendered = self.render_template(template.slug, payload, template=template)
+        log = self.save_email_log(
+            user_id=self._safe_int(payload.get("user_id")),
+            order_id=self._safe_int(payload.get("order_id")),
+            email=to,
+            template_slug=template.slug,
+            event_key=log_event_key,
+            dedupe_key=self._optional_text(payload.get("dedupe_key")),
+            status="queued",
+            subject=rendered.subject,
+            html_snapshot=rendered.html,
+            text_snapshot=rendered.text,
+            payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+            next_attempt_at=datetime.now(timezone.utc),
+        )
+        try:
+            result = self.provider.send(
+                to=to,
+                subject=rendered.subject,
+                html=rendered.html,
+                text=rendered.text,
+            )
+            log.status = "sent"
+            log.provider = getattr(result, "provider", None) or "mock"
+            log.provider_message_id = getattr(result, "provider_message_id", None)
+            log.sent_at = datetime.now(timezone.utc)
+            log.attempts = 1
+            log.next_attempt_at = None
+            self.db.commit()
+            self.db.refresh(log)
+            return log
+        except Exception as exc:
+            log.status = "failed"
+            log.error_message = str(exc)[:2000]
+            log.attempts = 1
+            log.next_attempt_at = None
+            self.db.commit()
+            self.db.refresh(log)
+            if raise_on_failure:
+                raise
+            return log
 
     def _active_admin_templates_for_event(self, event_key: str) -> list[EmailTemplate]:
         admin_event = AUTOMATION_EVENT_TO_ADMIN_EVENT.get(event_key)
@@ -156,6 +188,19 @@ class EmailAutomationService:
             .order_by(EmailTemplate.updated_at.desc(), EmailTemplate.id.desc())
             .all()
         )
+
+    def _admin_event_payload(self, event_key: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        admin_event = AUTOMATION_EVENT_TO_ADMIN_EVENT.get(event_key)
+        if not admin_event:
+            return event_key, payload
+
+        admin_payload = dict(payload)
+        order_number = self._optional_text(
+            admin_payload.get("pedido_numero") or admin_payload.get("order_number")
+        )
+        if order_number:
+            admin_payload["dedupe_key"] = f"{admin_event}:{order_number}"
+        return admin_event, admin_payload
 
     def _enqueue_templates(
         self,
@@ -220,6 +265,14 @@ class EmailAutomationService:
         payload = payload or {}
         duplicate = self._find_duplicate_log(to, event_key, template_slug, payload)
         if duplicate:
+            if duplicate.status in {"queued", "scheduled"}:
+                duplicate.subject = subject
+                duplicate.html_snapshot = html_content
+                duplicate.text_snapshot = text_content
+                duplicate.payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+                duplicate.dedupe_key = self._optional_text(payload.get("dedupe_key"))
+                self.db.commit()
+                self.db.refresh(duplicate)
             return duplicate
 
         now = datetime.now(timezone.utc)
@@ -293,8 +346,8 @@ class EmailAutomationService:
                 text=log.text_snapshot,
             )
             log.status = "sent"
-            log.provider = result.provider
-            log.provider_message_id = result.provider_message_id
+            log.provider = getattr(result, "provider", None) or "mock"
+            log.provider_message_id = getattr(result, "provider_message_id", None)
             log.sent_at = now
             log.error_message = None
             log.next_attempt_at = None
@@ -467,6 +520,58 @@ def build_order_email_payload(
     if extra:
         payload.update(extra)
     return payload
+
+
+def build_coupon_email_payload(
+    cupom: Cupom,
+    usuario: Usuario,
+) -> dict[str, Any]:
+    customer_name = usuario.nome_completo or usuario.username or "cliente"
+    if cupom.tipo == "porcentagem":
+        coupon_value = f"{int(cupom.valor)}%"
+    elif cupom.tipo == "frete":
+        coupon_value = "Frete gratis"
+    else:
+        coupon_value = f"R$ {cupom.valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    return {
+        "to": usuario.email,
+        "email": usuario.email,
+        "customer_name": customer_name,
+        "cliente_nome": customer_name,
+        "user_id": usuario.id,
+        "coupon_code": cupom.codigo,
+        "cupom_codigo": cupom.codigo,
+        "coupon_description": cupom.descricao,
+        "cupom_descricao": cupom.descricao,
+        "coupon_value": coupon_value,
+        "cupom_valor": coupon_value,
+        "coupon_expires_at": cupom.validade.isoformat(),
+        "cupom_validade": cupom.validade.isoformat(),
+        "store_name": settings.STORE_NAME,
+        "loja_nome": settings.STORE_NAME,
+        "store_url": settings.STORE_URL or settings.FRONTEND_URL,
+        "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
+        "dedupe_key": f"cupom_disponivel:{cupom.id}:{usuario.id}",
+    }
+
+
+def trigger_coupon_available_email_event(
+    db: Session,
+    cupom: Cupom,
+    usuario: Usuario,
+) -> None:
+    try:
+        EmailAutomationService(db).trigger_event(
+            "coupon_available",
+            build_coupon_email_payload(cupom, usuario),
+        )
+    except Exception:
+        logger.exception(
+            "Falha ao disparar automacao de email cupom_disponivel cupom=%s usuario=%s",
+            cupom.codigo,
+            usuario.id,
+        )
 
 
 def trigger_order_email_event(

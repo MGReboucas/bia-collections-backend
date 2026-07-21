@@ -904,9 +904,12 @@ def atualizar_rastreio_pedido(
     db.refresh(pedido)
     trigger_order_email_event(
         db,
-        "tracking_code_available",
+        "order_shipped",
         pedido,
-        extra={"tracking_code": pedido.codigo_rastreio or ""},
+        extra={
+            "tracking_code": pedido.codigo_rastreio or "",
+            "codigo_rastreio": pedido.codigo_rastreio or "",
+        },
     )
     return {"numero": pedido.numero, "codigo_rastreio": pedido.codigo_rastreio}
 

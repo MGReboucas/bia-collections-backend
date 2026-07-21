@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 TEST_DB_PATH = Path(__file__).resolve().parents[1] / "test_admin_security.db"
 if TEST_DB_PATH.exists():
@@ -29,7 +29,7 @@ from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
-from app.modules.email.models import EmailTemplate
+from app.modules.email.models import EmailLog, EmailTemplate
 from app.modules.email.seeds import seed_email_automation
 from app.services.two_factor_service import hash_two_factor_token
 from main import app
@@ -2444,6 +2444,521 @@ def test_public_produto_retorna_avaliacoes_aprovadas_do_produto(client):
     assert outra_aprovada_id not in [item["id"] for item in body]
 
 
+def seed_admin_email_flow(monkeypatch):
+    seed_email_automation()
+    tasks_module = importlib.import_module("app.modules.email.tasks")
+    monkeypatch.setattr(tasks_module, "enqueue_email_log", lambda *args, **kwargs: None)
+
+
+def patch_service_email_provider(monkeypatch):
+    sent: list[dict[str, str | None]] = []
+    service_module = importlib.import_module("app.modules.email.service")
+
+    class FakeResult:
+        def __init__(self, index: int):
+            self.provider = "fake"
+            self.provider_message_id = f"fake-message-{index}"
+
+    class FakeEmailProvider:
+        def send(self, to: str, subject: str, html: str | None = None, text: str | None = None):
+            sent.append({"to": to, "subject": subject, "html": html, "text": text})
+            return FakeResult(len(sent))
+
+    monkeypatch.setattr(service_module, "EmailProvider", FakeEmailProvider)
+    return sent, FakeEmailProvider
+
+
+def email_logs() -> list[EmailLog]:
+    db = SessionLocal()
+    try:
+        return db.query(EmailLog).order_by(EmailLog.id.asc()).all()
+    finally:
+        db.close()
+
+
+def create_basic_product(nome: str = "Vestido Email", preco: float = 50.0) -> int:
+    db = SessionLocal()
+    try:
+        produto = Produto(nome=nome, descricao="Produto para email", preco=preco, ativo=True)
+        db.add(produto)
+        db.commit()
+        db.refresh(produto)
+        return produto.id
+    finally:
+        db.close()
+
+
+def create_order_record(
+    *,
+    username: str,
+    email: str,
+    numero: str,
+    status_pedido: str = "Aguardando pagamento",
+    forma_pagamento: str = "pix",
+    total: float = 100.0,
+    codigo_rastreio: str | None = None,
+) -> tuple[int, int]:
+    user_id = create_user(username, email)
+    db = SessionLocal()
+    try:
+        pedido = Pedido(
+            numero=numero,
+            usuario_id=user_id,
+            status=status_pedido,
+            forma_pagamento=forma_pagamento,
+            subtotal=max(total - 10.0, 0.0),
+            valor_frete=10.0,
+            total=total,
+            codigo_rastreio=codigo_rastreio,
+        )
+        db.add(pedido)
+        db.commit()
+        db.refresh(pedido)
+        return pedido.id, user_id
+    finally:
+        db.close()
+
+
+def assert_email_log_snapshot(
+    log: EmailLog,
+    *,
+    event_key: str,
+    recipient: str,
+    status_log: str,
+    subject_contains: str,
+    html_contains: str,
+    text_contains: str,
+    payload_values: dict[str, str],
+) -> dict:
+    assert log.event_key == event_key
+    assert log.email == recipient
+    assert log.status == status_log
+    assert log.subject is not None and subject_contains in log.subject
+    assert log.html_snapshot is not None and html_contains in log.html_snapshot
+    assert log.text_snapshot is not None and text_contains in log.text_snapshot
+    payload = json.loads(log.payload_json or "{}")
+    for key, value in payload_values.items():
+        assert payload[key] == value
+    return payload
+
+
+def test_pedido_criado_usa_template_admin_e_registra_log_renderizado(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("cliente-email-pedido", "cliente-email-pedido@example.com")
+    produto_id = create_basic_product()
+
+    response = client.post(
+        "/api/v1/pedidos",
+        json={
+            "itens": [{"produto_id": produto_id, "quantidade": 2, "tamanho": "M", "cor": "Azul"}],
+            "endereco": {
+                "cep": "01001000",
+                "rua": "Rua Teste",
+                "numero": "123",
+                "bairro": "Centro",
+                "cidade": "Sao Paulo",
+                "estado": "SP",
+            },
+            "forma_pagamento": "pix",
+            "frete": {"nome": "PAC", "prazo": "5 dias", "valor": 10.0},
+        },
+        headers=auth_headers("cliente-email-pedido"),
+    )
+
+    assert response.status_code == 201
+    numero = response.json()["numero_pedido"]
+    logs = email_logs()
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.template_slug == "admin-default-pedido-criado"
+    payload = assert_email_log_snapshot(
+        log,
+        event_key="pedido_criado",
+        recipient="cliente-email-pedido@example.com",
+        status_log="queued",
+        subject_contains=f"Recebemos seu pedido {numero}",
+        html_contains="Pedido recebido",
+        text_contains=numero,
+        payload_values={"pedido_numero": numero, "cliente_nome": "cliente-email-pedido"},
+    )
+    assert log.dedupe_key == f"pedido_criado:{numero}"
+    assert payload["pedido_total"] == "R$ 110,00"
+
+
+def test_pagamento_aprovado_cartao_e_webhook_registram_logs_admin(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    card_order_id, _ = create_order_record(
+        username="cliente-email-card",
+        email="cliente-email-card@example.com",
+        numero="EMAILPAY1",
+        forma_pagamento="cartao",
+        total=112.5,
+    )
+    webhook_order_id, _ = create_order_record(
+        username="cliente-email-webhook",
+        email="cliente-email-webhook@example.com",
+        numero="EMAILPAY2",
+        forma_pagamento="cartao",
+        total=90.0,
+    )
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    class FakeCardPayment:
+        def create(self, payload, options=None):
+            return {
+                "status": 201,
+                "response": {
+                    "id": "pay_card_email",
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "payment_method_id": "visa",
+                },
+            }
+
+        def get(self, payment_id):
+            assert payment_id == "pay_webhook_email"
+            return {
+                "status": 200,
+                "response": {
+                    "id": "pay_webhook_email",
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "external_reference": "EMAILPAY2",
+                    "transaction_amount": 90.0,
+                    "payment_method_id": "visa",
+                    "metadata": {"pedido_numero": "EMAILPAY2", "payment_flow": "cartao"},
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, access_token):
+            assert access_token == "token"
+
+        def payment(self):
+            return FakeCardPayment()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+
+    card_response = client.post(
+        "/api/v1/pagamentos/cartao/EMAILPAY1",
+        json={
+            "token": "tok_card",
+            "payment_method_id": "visa",
+            "issuer_id": "123",
+            "installments": 1,
+            "transaction_amount": 112.5,
+            "payer": {
+                "email": "pagador@example.com",
+                "identification": {"type": "CPF", "number": "12345678909"},
+            },
+        },
+        headers=auth_headers("cliente-email-card"),
+    )
+    webhook_response = client.post(
+        "/api/v1/pagamentos/webhook",
+        json={"type": "payment", "data": {"id": "pay_webhook_email"}},
+    )
+
+    assert card_response.status_code == 200
+    assert webhook_response.status_code == 200
+    logs = email_logs()
+    assert len(logs) == 2
+    assert {log.order_id for log in logs} == {card_order_id, webhook_order_id}
+    for log, numero, recipient in [
+        (logs[0], "EMAILPAY1", "cliente-email-card@example.com"),
+        (logs[1], "EMAILPAY2", "cliente-email-webhook@example.com"),
+    ]:
+        assert log.template_slug == "admin-default-pagamento-aprovado"
+        assert_email_log_snapshot(
+            log,
+            event_key="pagamento_aprovado",
+            recipient=recipient,
+            status_log="queued",
+            subject_contains=f"Pagamento aprovado - Pedido {numero}",
+            html_contains="Pagamento aprovado",
+            text_contains=numero,
+            payload_values={"pedido_numero": numero},
+        )
+        assert log.dedupe_key == f"pagamento_aprovado:{numero}"
+
+
+def test_pedido_enviado_por_status_e_rastreio_sem_duplicar(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-email-ship", MASTER_ADMIN_EMAIL, is_admin=True)
+    headers = auth_headers("master-email-ship")
+    status_order_id, _ = create_order_record(
+        username="cliente-email-ship-status",
+        email="cliente-email-ship-status@example.com",
+        numero="EMAILSHIP1",
+        status_pedido="Pagamento aprovado",
+        codigo_rastreio="BRSTATUS123",
+    )
+    tracking_order_id, _ = create_order_record(
+        username="cliente-email-ship-track",
+        email="cliente-email-ship-track@example.com",
+        numero="EMAILSHIP2",
+        status_pedido="Pagamento aprovado",
+    )
+    duplicate_order_id, _ = create_order_record(
+        username="cliente-email-ship-dup",
+        email="cliente-email-ship-dup@example.com",
+        numero="EMAILSHIP3",
+        status_pedido="Pagamento aprovado",
+    )
+
+    status_response = client.put(
+        "/api/v1/admin/pedidos/EMAILSHIP1/status",
+        json={"status": "Enviado"},
+        headers=headers,
+    )
+    tracking_response = client.put(
+        "/api/v1/admin/pedidos/EMAILSHIP2/rastreio",
+        json={"codigo_rastreio": "BRTRACK456"},
+        headers=headers,
+    )
+    duplicate_status = client.put(
+        "/api/v1/admin/pedidos/EMAILSHIP3/status",
+        json={"status": "Enviado"},
+        headers=headers,
+    )
+    duplicate_tracking = client.put(
+        "/api/v1/admin/pedidos/EMAILSHIP3/rastreio",
+        json={"codigo_rastreio": "BRDUP789"},
+        headers=headers,
+    )
+
+    assert status_response.status_code == 200
+    assert tracking_response.status_code == 200
+    assert duplicate_status.status_code == 200
+    assert duplicate_tracking.status_code == 200
+
+    logs = email_logs()
+    assert len([log for log in logs if log.order_id == duplicate_order_id]) == 1
+    by_order = {log.order_id: log for log in logs}
+    assert by_order[status_order_id].template_slug == "admin-default-pedido-enviado"
+    assert_email_log_snapshot(
+        by_order[status_order_id],
+        event_key="pedido_enviado",
+        recipient="cliente-email-ship-status@example.com",
+        status_log="queued",
+        subject_contains="Seu pedido EMAILSHIP1 foi enviado",
+        html_contains="BRSTATUS123",
+        text_contains="BRSTATUS123",
+        payload_values={"pedido_numero": "EMAILSHIP1", "codigo_rastreio": "BRSTATUS123"},
+    )
+    assert_email_log_snapshot(
+        by_order[tracking_order_id],
+        event_key="pedido_enviado",
+        recipient="cliente-email-ship-track@example.com",
+        status_log="queued",
+        subject_contains="Seu pedido EMAILSHIP2 foi enviado",
+        html_contains="BRTRACK456",
+        text_contains="BRTRACK456",
+        payload_values={"pedido_numero": "EMAILSHIP2", "codigo_rastreio": "BRTRACK456"},
+    )
+    assert by_order[duplicate_order_id].dedupe_key == "pedido_enviado:EMAILSHIP3"
+    assert "BRDUP789" in (by_order[duplicate_order_id].html_snapshot or "")
+
+
+def test_recuperacao_senha_usa_template_admin_e_log_sent(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    sent, _ = patch_service_email_provider(monkeypatch)
+    create_user("cliente-email-reset", "cliente-email-reset@example.com")
+
+    response = client.post(
+        "/api/v1/auth/solicitar-redefinicao",
+        json={"email": " Cliente-Email-Reset@Example.com "},
+    )
+
+    assert response.status_code == 200
+    logs = email_logs()
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.template_slug == "admin-default-recuperacao-senha"
+    payload = assert_email_log_snapshot(
+        log,
+        event_key="recuperacao_senha",
+        recipient="cliente-email-reset@example.com",
+        status_log="sent",
+        subject_contains="Redefinicao de senha - Bia Collections",
+        html_contains="Redefinicao de senha",
+        text_contains="15",
+        payload_values={"cliente_nome": "cliente-email-reset", "minutos_expiracao": "15"},
+    )
+    assert payload["codigo"].isdigit()
+    assert payload["codigo"] in log.html_snapshot
+    assert payload["codigo"] in log.text_snapshot
+    assert sent[0]["to"] == "cliente-email-reset@example.com"
+
+
+def test_codigo_acesso_login_cadastro_reenviar_usa_template_admin(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    sent, _ = patch_service_email_provider(monkeypatch)
+    create_user("cliente-email-2fa", "cliente-email-2fa@example.com")
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"login": "cliente-email-2fa", "senha": PASSWORD},
+    )
+    assert login.status_code == 200
+    update_challenge_by_token(
+        login.json()["two_factor_token"],
+        ultimo_envio_em=datetime.now(timezone.utc) - timedelta(seconds=61),
+    )
+    resend = client.post(
+        "/api/v1/auth/login/reenviar-2fa",
+        json={"two_factor_token": login.json()["two_factor_token"]},
+    )
+    cadastro = client.post(
+        "/api/v1/auth/cadastro",
+        json={
+            "username": "cliente-email-cadastro-2fa",
+            "email": "cliente-email-cadastro-2fa@example.com",
+            "senha": PASSWORD,
+            "confirma_senha": PASSWORD,
+        },
+    )
+
+    assert resend.status_code == 200
+    assert cadastro.status_code == 201
+    logs = email_logs()
+    assert len(logs) == 3
+    assert len(sent) == 3
+    assert [log.event_key for log in logs] == ["codigo_acesso", "codigo_acesso", "codigo_acesso"]
+    assert [log.status for log in logs] == ["sent", "sent", "sent"]
+    assert [log.template_slug for log in logs] == ["admin-default-codigo-acesso"] * 3
+    assert [log.email for log in logs] == [
+        "cliente-email-2fa@example.com",
+        "cliente-email-2fa@example.com",
+        "cliente-email-cadastro-2fa@example.com",
+    ]
+    for log in logs:
+        payload = json.loads(log.payload_json or "{}")
+        assert payload["codigo"].isdigit()
+        assert payload["codigo"] in log.html_snapshot
+        assert payload["codigo"] in log.text_snapshot
+        assert log.subject == "Seu codigo de acesso - Bia Collections"
+
+
+def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("cliente-email-cupom", "cliente-email-cupom@example.com")
+    db = SessionLocal()
+    try:
+        cupom = Cupom(
+            codigo="EMAIL15",
+            descricao="Cupom de email",
+            tipo="porcentagem",
+            valor=15,
+            validade=date.today() + timedelta(days=30),
+            ativo=True,
+            valor_minimo_pedido=50.0,
+        )
+        db.add(cupom)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/cupons/adicionar",
+        json={"codigo": "email15"},
+        headers=auth_headers("cliente-email-cupom"),
+    )
+
+    assert response.status_code == 200
+    logs = email_logs()
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.template_slug == "admin-default-cupom-disponivel"
+    assert_email_log_snapshot(
+        log,
+        event_key="cupom_disponivel",
+        recipient="cliente-email-cupom@example.com",
+        status_log="queued",
+        subject_contains="Seu cupom EMAIL15 esta disponivel",
+        html_contains="EMAIL15",
+        text_contains="EMAIL15",
+        payload_values={"cupom_codigo": "EMAIL15", "cliente_nome": "cliente-email-cupom"},
+    )
+
+
+def test_admin_email_manual_envia_campanha_e_cria_logs(client, monkeypatch):
+    create_user("master-email-manual", MASTER_ADMIN_EMAIL, is_admin=True)
+    recipient_user_id = create_user("manual-target", "manual-target@example.com")
+    headers = auth_headers("master-email-manual")
+    sent: list[dict[str, str | None]] = []
+
+    class FakeEmailProvider:
+        def send(self, to: str, subject: str, html: str | None = None, text: str | None = None):
+            sent.append({"to": to, "subject": subject, "html": html, "text": text})
+
+    admin_emails_module = importlib.import_module("app.routers.admin_emails")
+    monkeypatch.setattr(admin_emails_module, "EmailProvider", FakeEmailProvider)
+
+    criado = client.post(
+        "/api/v1/admin/emails",
+        json={
+            "nome": "Campanha manual",
+            "assunto": "Ola {{cliente_nome}} - {{assunto_extra}}",
+            "evento": "manual",
+            "status": "ativo",
+            "html": "<p>{{cliente_nome}}</p><p>{{mensagem}}</p><p>{{loja_nome}}</p>",
+        },
+        headers=headers,
+    )
+    assert criado.status_code == 201
+
+    response = client.post(
+        f"/api/v1/admin/emails/{criado.json()['id']}/enviar",
+        json={
+            "usuario_ids": [recipient_user_id],
+            "destinatarios": [
+                {
+                    "email": " Avulsa@Example.com ",
+                    "variaveis": {"cliente_nome": "Avulsa"},
+                }
+            ],
+            "variaveis": {"assunto_extra": "VIP", "mensagem": "Oferta liberada"},
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert body["enviados"] == 2
+    assert body["falhas"] == 0
+    assert len(sent) == 2
+
+    logs = email_logs()
+    assert len(logs) == 2
+    logs_by_email = {log.email: log for log in logs}
+    assert_email_log_snapshot(
+        logs_by_email["manual-target@example.com"],
+        event_key="manual",
+        recipient="manual-target@example.com",
+        status_log="sent",
+        subject_contains="Ola manual-target - VIP",
+        html_contains="Oferta liberada",
+        text_contains="Oferta liberada",
+        payload_values={"cliente_nome": "manual-target", "mensagem": "Oferta liberada"},
+    )
+    explicit_payload = assert_email_log_snapshot(
+        logs_by_email["avulsa@example.com"],
+        event_key="manual",
+        recipient="avulsa@example.com",
+        status_log="sent",
+        subject_contains="Ola Avulsa - VIP",
+        html_contains="Avulsa",
+        text_contains="Oferta liberada",
+        payload_values={"cliente_nome": "Avulsa", "mensagem": "Oferta liberada"},
+    )
+    assert explicit_payload["variaveis"]["assunto_extra"] == "VIP"
+
+
 def test_admin_emails_crud_e_limite_de_um_ativo_por_evento(client):
     create_user("master-emails", MASTER_ADMIN_EMAIL, is_admin=True)
     headers = auth_headers("master-emails")
@@ -2576,6 +3091,10 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert by_event["codigo_acesso"]["status"] == "ativo"
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
+    assert "Bia" in by_event["pedido_criado"]["html"]
+    assert "COLLECTIONS" in by_event["pedido_criado"]["html"]
+    assert "ACESSORIOS FEMININOS" in by_event["pedido_criado"]["html"]
+    assert "background: #111111" in by_event["pedido_criado"]["html"]
 
     seed_email_automation()
     db = SessionLocal()
