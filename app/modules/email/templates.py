@@ -15,6 +15,7 @@ BRAND_COLORS = {
 
 BRAND_EMAIL_LOGO_PATH = "/uploads/email/bia-collections-logooficial.png"
 BRAND_EMAIL_LOGO_FILENAME = "bia-collections-logooficial.png"
+BRAND_INSTAGRAM_URL = "https://www.instagram.com/biacollectionstore"
 
 _LEGACY_HEADER_LOGO_RE = re.compile(
     r'<td align="center" style="padding: 38px 28px 18px; border-bottom: 1px solid #eee8df;">\s*'
@@ -154,7 +155,7 @@ def brand_email_logo_img(*, width: int = 260) -> str:
 def brand_email_logo_cell() -> str:
     return (
         '<td align="center" style="padding: 34px 28px 22px; border-bottom: 1px solid #eee8df;">'
-        f"{brand_email_logo_img(width=260)}"
+        f"{brand_email_logo_img(width=230)}"
         "</td>"
     )
 
@@ -163,7 +164,7 @@ def brand_email_logo_block() -> str:
     return (
         '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">'
         '<tr><td align="center" style="padding: 24px 0 20px;">'
-        f"{brand_email_logo_img(width=260)}"
+        f"{brand_email_logo_img(width=230)}"
         "</td></tr></table>"
     )
 
@@ -224,7 +225,7 @@ def brand_email_html(
           </tr>
         """
 
-    footer = footer_note or "Se voce nao solicitou esta mensagem, ignore este e-mail."
+    footer = footer_note or "Se você não solicitou esta mensagem, ignore este e-mail."
 
     return f"""<!doctype html>
 <html lang="pt-BR">
@@ -270,22 +271,28 @@ def brand_email_html(
 
 def two_factor_code_email(codigo: str) -> BrandEmailMessage:
     return BrandEmailMessage(
-        subject="Seu codigo de acesso - Bia Collections",
+        subject="Seu código de acesso - Bia Collections",
         text=(
-            f"Seu codigo de acesso e: {codigo}\n\n"
-            "Ele expira em 10 minutos. Se voce nao tentou entrar, ignore este e-mail."
+            f"Seu código de acesso é: {codigo}\n\n"
+            "Ele expira em 10 minutos. Por segurança, não compartilhe este código com ninguém.\n\n"
+            "Confira nossos cupons no Instagram da loja: "
+            f"{BRAND_INSTAGRAM_URL}"
         ),
         html=brand_email_html(
-            title="Seu codigo de acesso",
-            preheader="Use este codigo para concluir seu acesso a Bia Collections.",
-            intro="Use o codigo abaixo para concluir seu acesso com seguranca.",
+            title="Seu código de acesso",
+            preheader="Use este código para concluir seu acesso à Bia Collections.",
+            intro="Use o código abaixo para concluir seu acesso com segurança.",
             code=codigo,
             body_html=(
                 "<p style=\"margin: 0 0 12px; text-align: center;\">"
-                "Este codigo expira em <strong>10 minutos</strong>.</p>"
+                "Este código expira em <strong>10 minutos</strong>.</p>"
+                "<p style=\"margin: 0 0 18px; text-align: center;\">"
+                "Por segurança, não compartilhe este código com ninguém.</p>"
                 "<p style=\"margin: 0; text-align: center;\">"
-                "Por seguranca, nao compartilhe este codigo com ninguem.</p>"
+                "Confira nossos cupons no Instagram da loja.</p>"
             ),
+            cta_label="Ver Instagram",
+            cta_url=BRAND_INSTAGRAM_URL,
         ),
     )
 

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.modules.email.models import EmailAutomation, EmailTemplate
-from app.modules.email.templates import brand_email_html
+from app.modules.email.templates import BRAND_INSTAGRAM_URL, brand_email_html
 
 
 def _schema(*variables: str) -> str:
@@ -97,6 +97,44 @@ def _fill_missing_admin_template_fields(template: EmailTemplate, data: dict[str,
             setattr(template, key, value)
 
 
+ACCESS_CODE_TEMPLATE_REFRESH_SLUGS = {"two-factor-code", "admin-default-codigo-acesso"}
+ACCESS_CODE_TEMPLATE_REFRESH_MARKERS = (
+    "Seu codigo de acesso",
+    "Seu codigo de acesso e",
+    "Use este codigo",
+    "Use o codigo abaixo",
+    "Este codigo expira",
+    "Por seguranca",
+    "width: 260px",
+    'width="260"',
+)
+
+
+def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
+    if data["slug"] not in ACCESS_CODE_TEMPLATE_REFRESH_SLUGS:
+        return
+
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in (
+            "nome",
+            "name",
+            "subject",
+            "preheader",
+            "html",
+            "html_template",
+            "text_template",
+        )
+    )
+    if not any(marker in content for marker in ACCESS_CODE_TEMPLATE_REFRESH_MARKERS):
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
 EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
     _template(
         name="Boas-vindas",
@@ -139,16 +177,27 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         variables=("reset_code", "expires_in_minutes"),
     ),
     _template(
-        name="Codigo de acesso",
+        name="Código de acesso",
         slug="two-factor-code",
         category="seguranca",
-        subject="Seu codigo de acesso - Bia Collections",
-        preheader="Use este codigo para concluir seu acesso.",
-        title="Seu codigo de acesso",
-        intro="Use o codigo abaixo para concluir seu acesso com seguranca.",
-        body_html="<p style=\"text-align:center; font-size:26px; letter-spacing:8px;\"><strong>{{code}}</strong></p><p style=\"text-align:center;\">Este codigo expira em {{expires_in_minutes}} minutos.</p>",
-        text_template="Seu codigo de acesso e: {{code}}. Ele expira em {{expires_in_minutes}} minutos.",
+        subject="Seu código de acesso - Bia Collections",
+        preheader="Use este código para concluir seu acesso.",
+        title="Seu código de acesso",
+        intro="Use o código abaixo para concluir seu acesso com segurança.",
+        body_html=(
+            "<p style=\"text-align:center; font-size:26px; letter-spacing:8px;\"><strong>{{code}}</strong></p>"
+            "<p style=\"text-align:center;\">Este código expira em {{expires_in_minutes}} minutos.</p>"
+            "<p style=\"text-align:center;\">Por segurança, não compartilhe este código com ninguém.</p>"
+            "<p style=\"text-align:center;\">Confira nossos cupons no Instagram da loja.</p>"
+        ),
+        text_template=(
+            "Seu código de acesso é: {{code}}. Ele expira em {{expires_in_minutes}} minutos. "
+            "Confira nossos cupons no Instagram da loja: "
+            f"{BRAND_INSTAGRAM_URL}"
+        ),
         variables=("code", "expires_in_minutes"),
+        cta_label="Ver Instagram",
+        cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="Senha alterada",
@@ -453,22 +502,28 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         variables=("cliente_nome", "codigo", "minutos_expiracao", "loja_nome", "loja_url", "link_recuperacao"),
     ),
     _admin_template(
-        nome="Codigo de acesso",
+        nome="Código de acesso",
         slug="admin-default-codigo-acesso",
         evento="codigo_acesso",
-        assunto="Seu codigo de acesso - {{loja_nome}}",
-        title="Seu codigo de acesso",
-        preheader="Use este codigo para concluir seu acesso.",
-        intro="Use o codigo abaixo para concluir seu acesso com seguranca.",
+        assunto="Seu código de acesso - {{loja_nome}}",
+        title="Seu código de acesso",
+        preheader="Use este código para concluir seu acesso.",
+        intro="Use o código abaixo para concluir seu acesso com segurança.",
         body_html=(
             "<p style=\"margin: 0 0 16px; text-align: center; font-size: 24px; letter-spacing: 6px; color: #111111;\">"
             "<strong>{{codigo}}</strong></p>"
-            "<p style=\"margin: 0; text-align: center;\">Este codigo expira em {{minutos_expiracao}} minutos.</p>"
+            "<p style=\"margin: 0 0 12px; text-align: center;\">Este código expira em {{minutos_expiracao}} minutos.</p>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">Por segurança, não compartilhe este código com ninguém.</p>"
+            "<p style=\"margin: 0; text-align: center;\">Confira nossos cupons no Instagram da loja.</p>"
         ),
         text_template=(
-            "Seu codigo de acesso e {{codigo}}. Este codigo expira em {{minutos_expiracao}} minutos."
+            "Seu código de acesso é: {{codigo}}. Este código expira em {{minutos_expiracao}} minutos. "
+            "Confira nossos cupons no Instagram da loja: "
+            f"{BRAND_INSTAGRAM_URL}"
         ),
         variables=("codigo", "minutos_expiracao", "loja_nome", "loja_url"),
+        cta_label="Ver Instagram",
+        cta_url=BRAND_INSTAGRAM_URL,
     ),
     _admin_template(
         nome="Cupom disponivel",
@@ -547,11 +602,14 @@ def seed_email_automation(db: Session | None = None) -> None:
                 template = EmailTemplate(**data)
                 session.add(template)
                 session.flush()
+            else:
+                _refresh_access_code_template_if_old(template, data)
             templates_by_slug[data["slug"]] = template
 
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
             template = session.query(EmailTemplate).filter(EmailTemplate.slug == data["slug"]).first()
             if template:
+                _refresh_access_code_template_if_old(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 continue
 

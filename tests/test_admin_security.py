@@ -516,9 +516,12 @@ def test_envio_por_resend_usa_api_http_quando_api_key_configurada(monkeypatch):
     assert captured["headers"] == {"Authorization": "Bearer resend-key"}
     assert captured["json"]["from"] == "Bia Collections <sender@example.com>"
     assert captured["json"]["to"] == ["cliente@example.com"]
-    assert captured["json"]["subject"] == "Seu codigo de acesso - Bia Collections"
+    assert captured["json"]["subject"] == "Seu código de acesso - Bia Collections"
     assert 'data-bia-email-logo="true"' in captured["json"]["html"]
     assert "bia-collections-logooficial.png" in captured["json"]["html"]
+    assert 'width="230"' in captured["json"]["html"]
+    assert "Confira nossos cupons no Instagram da loja." in captured["json"]["html"]
+    assert "https://www.instagram.com/biacollectionstore" in captured["json"]["html"]
     assert "123456" in captured["json"]["text"]
 
 
@@ -559,9 +562,12 @@ def test_envio_por_brevo_usa_api_http_quando_configurado(monkeypatch):
     assert captured["headers"] == {"api-key": "brevo-key"}
     assert captured["json"]["sender"] == {"name": "Bia Collections", "email": "sender@example.com"}
     assert captured["json"]["to"] == [{"email": "cliente@example.com"}]
-    assert captured["json"]["subject"] == "Seu codigo de acesso - Bia Collections"
+    assert captured["json"]["subject"] == "Seu código de acesso - Bia Collections"
     assert 'data-bia-email-logo="true"' in captured["json"]["htmlContent"]
     assert "bia-collections-logooficial.png" in captured["json"]["htmlContent"]
+    assert 'width="230"' in captured["json"]["htmlContent"]
+    assert "Confira nossos cupons no Instagram da loja." in captured["json"]["htmlContent"]
+    assert "https://www.instagram.com/biacollectionstore" in captured["json"]["htmlContent"]
     assert "123456" in captured["json"]["textContent"]
 
 
@@ -2847,7 +2853,9 @@ def test_codigo_acesso_login_cadastro_reenviar_usa_template_admin(client, monkey
         assert payload["codigo"].isdigit()
         assert payload["codigo"] in log.html_snapshot
         assert payload["codigo"] in log.text_snapshot
-        assert log.subject == "Seu codigo de acesso - Bia Collections"
+        assert log.subject == "Seu código de acesso - Bia Collections"
+        assert "Confira nossos cupons no Instagram da loja." in log.html_snapshot
+        assert "https://www.instagram.com/biacollectionstore" in log.html_snapshot
 
 
 def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypatch):
