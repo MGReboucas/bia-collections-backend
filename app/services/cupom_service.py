@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
-from app.models.cupom import Cupom, CupomResgatado, CupomUsado
+from app.models.cupom import Cupom, CupomUsado
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.services.frete_service import formatar_preco
@@ -40,12 +40,22 @@ def cupom_disponivel(cupom: Cupom) -> bool:
     return True
 
 
+def validar_tipo_e_valor_cupom(cupom: Cupom) -> None:
+    if cupom.tipo == "porcentagem" and 0 < cupom.valor <= 100:
+        return
+    if cupom.tipo == "valor" and cupom.valor > 0:
+        return
+    if cupom.tipo == "frete" and cupom.valor >= 0:
+        return
+    raise HTTPException(status_code=422, detail="Tipo ou valor do cupom invalido.")
+
+
 def calcular_desconto_cupom(cupom: Cupom, total: float, valor_frete: float = 0.0) -> float:
     total = round(max(total or 0.0, 0.0), 2)
     valor_frete = round(max(valor_frete or 0.0, 0.0), 2)
 
     if cupom.tipo == "porcentagem":
-        return round(total * (cupom.valor / 100), 2)
+        return round(min(total * (cupom.valor / 100), total), 2)
     if cupom.tipo == "valor":
         return round(min(cupom.valor, total), 2)
     if cupom.tipo == "frete":
@@ -73,6 +83,9 @@ def validar_cupom_para_total(
     if not codigo_normalizado:
         raise HTTPException(status_code=422, detail="Codigo do cupom e obrigatorio.")
 
+    total = round(max(total or 0.0, 0.0), 2)
+    valor_frete = round(max(valor_frete or 0.0, 0.0), 2)
+
     cupom = (
         db.query(Cupom)
         .filter(Cupom.codigo == codigo_normalizado, Cupom.deletado_em.is_(None))
@@ -84,6 +97,7 @@ def validar_cupom_para_total(
         raise HTTPException(status_code=422, detail="Cupom expirado.")
     if cupom.max_usos is not None and (cupom.total_usos or 0) >= cupom.max_usos:
         raise HTTPException(status_code=422, detail="Cupom esgotado.")
+    validar_tipo_e_valor_cupom(cupom)
     if total < (cupom.valor_minimo_pedido or 0.0):
         raise HTTPException(
             status_code=422,
@@ -98,20 +112,6 @@ def validar_cupom_para_total(
         )
         if ja_usado:
             raise HTTPException(status_code=422, detail="Cupom ja utilizado.")
-
-    foi_resgatado = (
-        db.query(CupomResgatado)
-        .filter(
-            CupomResgatado.cupom_id == cupom.id,
-            CupomResgatado.usuario_id == usuario.id,
-        )
-        .first()
-    )
-    if not foi_resgatado:
-        raise HTTPException(
-            status_code=422,
-            detail="Adicione este cupom à sua conta antes de usar.",
-        )
 
     return cupom, calcular_desconto_cupom(cupom, total, valor_frete)
 

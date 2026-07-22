@@ -23,7 +23,7 @@ from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.avaliacao import Avaliacao
 from app.models.reset_senha import ResetSenha
 from app.models.banner import Banner
-from app.models.cupom import Cupom, CupomResgatado, CupomUsado
+from app.models.cupom import Cupom, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
@@ -1342,7 +1342,7 @@ def test_payload_token_e_cookie_manipulados_nao_liberam_admin(client):
 
 
 def test_criar_pedido_inclui_frete_e_cupom_frete(client):
-    usuario_id = create_user("cliente-pedido", "cliente-pedido@example.com")
+    create_user("cliente-pedido", "cliente-pedido@example.com")
     db = SessionLocal()
     try:
         produto = Produto(nome="Bolsa checkout", preco=100.0, ativo=True)
@@ -1355,8 +1355,6 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
             ativo=True,
         )
         db.add_all([produto, cupom])
-        db.flush()
-        db.add(CupomResgatado(cupom_id=cupom.id, usuario_id=usuario_id))
         db.commit()
         produto_id = produto.id
     finally:
@@ -1401,7 +1399,7 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
         db.close()
 
 
-def test_cliente_adiciona_cupom_ao_perfil_antes_de_usar(client):
+def test_cliente_valida_cupom_por_codigo_e_adicionar_fica_compatibilidade(client):
     create_user("cliente-cupom", "cliente-cupom@example.com")
     create_user("outra-cliente-cupom", "outra-cliente-cupom@example.com")
     db = SessionLocal()
@@ -1432,8 +1430,9 @@ def test_cliente_adiciona_cupom_ao_perfil_antes_de_usar(client):
         headers=headers,
     )
     assert validacao_antes.status_code == 200
-    assert validacao_antes.json()["valido"] is False
-    assert "adicione" in validacao_antes.json()["mensagem"].lower()
+    assert validacao_antes.json()["valido"] is True
+    assert validacao_antes.json()["valor_desconto"] == 15.0
+    assert validacao_antes.json()["total_com_desconto"] == 85.0
 
     sem_login = client.post("/api/v1/cupons/adicionar", json={"codigo": "SOCIAL15"})
     assert sem_login.status_code == 401
@@ -1467,6 +1466,15 @@ def test_cliente_adiciona_cupom_ao_perfil_antes_de_usar(client):
     assert outra_carteira.status_code == 200
     assert outra_carteira.json()["ativos"] == []
 
+    outra_validacao = client.post(
+        "/api/v1/cupons/validar",
+        json={"codigo": "SOCIAL15", "total": 100.0},
+        headers=auth_headers("outra-cliente-cupom"),
+    )
+    assert outra_validacao.status_code == 200
+    assert outra_validacao.json()["valido"] is True
+    assert outra_validacao.json()["valor_desconto"] == 15.0
+
     validacao_depois = client.post(
         "/api/v1/cupons/validar",
         json={"codigo": "SOCIAL15", "total": 100.0},
@@ -1475,6 +1483,69 @@ def test_cliente_adiciona_cupom_ao_perfil_antes_de_usar(client):
     assert validacao_depois.status_code == 200
     assert validacao_depois.json()["valido"] is True
     assert validacao_depois.json()["valor_desconto"] == 15.0
+
+
+def test_criar_pedido_revalida_cupom_codigo_antes_de_aplicar(client):
+    create_user("cliente-cupom-revalidacao", "cliente-cupom-revalidacao@example.com")
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Bolsa revalidacao", preco=100.0, ativo=True)
+        cupom = Cupom(
+            codigo="MUDOU10",
+            descricao="Cupom alterado depois da validacao",
+            tipo="valor",
+            valor=10.0,
+            validade=datetime.now(timezone.utc).date() + timedelta(days=1),
+            ativo=True,
+        )
+        db.add_all([produto, cupom])
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    headers = auth_headers("cliente-cupom-revalidacao")
+    validacao = client.post(
+        "/api/v1/cupons/validar",
+        json={"codigo": "MUDOU10", "total": 100.0},
+        headers=headers,
+    )
+    assert validacao.status_code == 200
+    assert validacao.json()["valido"] is True
+
+    db = SessionLocal()
+    try:
+        db.query(Cupom).filter(Cupom.codigo == "MUDOU10").update({"ativo": False})
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/pedidos",
+        json={
+            "itens": [{"produto_id": produto_id, "quantidade": 1}],
+            "endereco": {
+                "cep": "01001-000",
+                "rua": "Rua Teste",
+                "numero": "10",
+                "bairro": "Centro",
+                "cidade": "Sao Paulo",
+                "estado": "SP",
+            },
+            "forma_pagamento": "pix",
+            "frete": {"nome": "PAC", "prazo": "7 a 10 dias", "valor": 0.0},
+            "cupom_codigo": "MUDOU10",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert "inativo" in response.json()["detail"].lower()
+    db = SessionLocal()
+    try:
+        assert db.query(Pedido).count() == 0
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize(
