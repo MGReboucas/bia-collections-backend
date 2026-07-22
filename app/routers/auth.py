@@ -3,6 +3,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import func
@@ -20,6 +21,7 @@ from app.modules.email.service import EmailAutomationService
 from app.services.two_factor_service import (
     CreatedTwoFactorChallenge,
     TwoFactorError,
+    TwoFactorResendTooSoonError,
     create_resend_challenge,
     create_two_factor_challenge,
     verify_two_factor_code,
@@ -142,12 +144,25 @@ def _challenge_response(
         two_factor_token=challenge.token,
         email=user.email,
         expires_in=challenge.expires_in,
+        resend_cooldown_seconds=challenge.resend_cooldown_seconds,
         message=message,
     )
 
 
 def _raise_two_factor_error(error: TwoFactorError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.detail)
+
+
+def _resend_too_soon_response(error: TwoFactorResendTooSoonError) -> JSONResponse:
+    retry_after = error.retry_after_seconds
+    return JSONResponse(
+        status_code=error.status_code,
+        content={
+            "detail": error.detail,
+            "retry_after_seconds": retry_after,
+        },
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 @router.post("/login", response_model=TwoFactorChallengeResponse)
@@ -214,6 +229,8 @@ def verificar_2fa(data: VerifyTwoFactorRequest, response: Response, db: Session 
 def reenviar_2fa(data: ResendTwoFactorRequest, db: Session = Depends(get_db)):
     try:
         challenge = create_resend_challenge(db, data.two_factor_token)
+    except TwoFactorResendTooSoonError as error:
+        return _resend_too_soon_response(error)
     except TwoFactorError as error:
         _raise_two_factor_error(error)
 
@@ -223,7 +240,8 @@ def reenviar_2fa(data: ResendTwoFactorRequest, db: Session = Depends(get_db)):
         two_factor_token=challenge.token,
         email=user.email,
         expires_in=challenge.expires_in,
-        message="Novo codigo enviado.",
+        resend_cooldown_seconds=challenge.resend_cooldown_seconds,
+        message="Código enviado.",
     )
 
 

@@ -187,6 +187,7 @@ def test_login_com_senha_correta_envia_codigo_e_nao_retorna_token(client, sent_2
     assert body["requires_2fa"] is True
     assert body["email"] == "cliente-2fa@example.com"
     assert body["expires_in"] == 600
+    assert body["resend_cooldown_seconds"] == 60
     assert "access_token" not in body
     assert sent_2fa_codes[-1]["email"] == "cliente-2fa@example.com"
 
@@ -300,6 +301,8 @@ def test_reenviar_invalida_codigo_antigo(client, sent_2fa_codes):
     )
 
     assert resend.status_code == 200
+    assert resend.json()["expires_in"] == 600
+    assert resend.json()["resend_cooldown_seconds"] == 60
     new_token = resend.json()["two_factor_token"]
     new_code = sent_2fa_codes[-1]["codigo"]
     assert new_token != old_token
@@ -331,6 +334,10 @@ def test_reenviar_tem_cooldown(client, sent_2fa_codes):
     )
 
     assert response.status_code == 429
+    body = response.json()
+    assert body["detail"] == "Aguarde antes de solicitar um novo codigo."
+    assert 1 <= body["retry_after_seconds"] <= 60
+    assert response.headers["retry-after"] == str(body["retry_after_seconds"])
 
 
 def test_reenviar_tem_limite_por_hora(client, sent_2fa_codes):

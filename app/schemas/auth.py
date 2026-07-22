@@ -106,6 +106,7 @@ class TwoFactorChallengeResponse(BaseModel):
     two_factor_token: str
     email: str
     expires_in: int
+    resend_cooldown_seconds: int
     message: str
 
 
@@ -146,4 +147,5 @@ class ResendTwoFactorResponse(BaseModel):
     two_factor_token: str
     email: str
     expires_in: int
+    resend_cooldown_seconds: int
     message: str

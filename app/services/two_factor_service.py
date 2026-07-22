@@ -1,4 +1,5 @@
 import hashlib
+import math
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,10 @@ class CreatedTwoFactorChallenge:
     def expires_in(self) -> int:
         return settings.TWO_FACTOR_CODE_EXPIRE_SECONDS
 
+    @property
+    def resend_cooldown_seconds(self) -> int:
+        return settings.TWO_FACTOR_RESEND_COOLDOWN_SECONDS
+
 
 class TwoFactorError(Exception):
     status_code = 400
@@ -39,6 +44,10 @@ class TwoFactorAttemptsExceededError(TwoFactorError):
 class TwoFactorResendTooSoonError(TwoFactorError):
     status_code = 429
     detail = "Aguarde antes de solicitar um novo codigo."
+
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(self.detail)
 
 
 class TwoFactorResendLimitError(TwoFactorError):
@@ -160,8 +169,11 @@ def create_resend_challenge(db: Session, token: str) -> CreatedTwoFactorChalleng
     challenge = ensure_challenge_can_be_used(db, get_open_challenge(db, token))
     now = utc_now()
     last_sent = as_aware_utc(challenge.ultimo_envio_em)
-    if now - last_sent < timedelta(seconds=settings.TWO_FACTOR_RESEND_COOLDOWN_SECONDS):
-        raise TwoFactorResendTooSoonError()
+    resend_cooldown = settings.TWO_FACTOR_RESEND_COOLDOWN_SECONDS
+    elapsed_seconds = (now - last_sent).total_seconds()
+    if elapsed_seconds < resend_cooldown:
+        retry_after_seconds = max(1, math.ceil(resend_cooldown - elapsed_seconds))
+        raise TwoFactorResendTooSoonError(retry_after_seconds)
 
     window_start = as_aware_utc(challenge.reenvio_janela_inicio)
     resend_count = challenge.reenvios_na_janela
