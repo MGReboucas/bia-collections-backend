@@ -25,7 +25,7 @@ from app.models.reset_senha import ResetSenha
 from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomUsado
 from app.models.pagamento import Pagamento
-from app.models.pedido import Pedido
+from app.models.pedido import ItemPedido, Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
@@ -2632,17 +2632,49 @@ def create_order_record(
     user_id = create_user(username, email)
     db = SessionLocal()
     try:
+        product_subtotal = max(total - 10.0, 0.0)
+        produto = Produto(
+            nome=f"Produto {numero}",
+            descricao="Produto para email de pagamento",
+            preco=product_subtotal,
+            imagem_url=f"/uploads/produtos/{numero.lower()}.webp",
+            ativo=True,
+            imagens=[
+                ProdutoImagem(
+                    imagem_url=f"/uploads/produtos/{numero.lower()}.webp",
+                    ordem=0,
+                    principal=True,
+                    modelo_nome="Dourado",
+                    modelo_cor="Dourado",
+                    cor_nome="Dourado",
+                )
+            ],
+        )
+        db.add(produto)
+        db.flush()
         pedido = Pedido(
             numero=numero,
             usuario_id=user_id,
             status=status_pedido,
             forma_pagamento=forma_pagamento,
-            subtotal=max(total - 10.0, 0.0),
+            subtotal=product_subtotal,
             valor_frete=10.0,
             total=total,
             codigo_rastreio=codigo_rastreio,
         )
         db.add(pedido)
+        db.flush()
+        db.add(
+            ItemPedido(
+                pedido_id=pedido.id,
+                produto_id=produto.id,
+                nome_produto=produto.nome,
+                preco_unitario=product_subtotal,
+                tamanho="Unico",
+                cor="Dourado",
+                quantidade=1,
+            )
+        )
         db.commit()
         db.refresh(pedido)
         return pedido.id, user_id
@@ -2826,7 +2858,7 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(clie
         (customer_logs[1], "EMAILPAY2", "cliente-email-webhook@example.com"),
     ]:
         assert log.template_slug == "admin-default-pagamento-aprovado"
-        assert_email_log_snapshot(
+        payload = assert_email_log_snapshot(
             log,
             event_key="pagamento_aprovado",
             recipient=recipient,
@@ -2837,6 +2869,21 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(clie
             payload_values={"pedido_numero": numero},
         )
         assert log.dedupe_key == f"pagamento_aprovado:{numero}"
+        assert payload["link_meus_pedidos"] == "https://loja.example.test/meus-pedidos"
+        assert payload["pedido_itens_text"].startswith(f"Produto {numero}")
+        assert "Resumo do pedido" in log.html_snapshot
+        assert f"Produto {numero}" in log.html_snapshot
+        assert "Quantidade: <strong>1</strong>" in log.html_snapshot
+        assert "Cor: <strong>Dourado</strong>" in log.html_snapshot
+        assert "Modelo/Tamanho: <strong>Unico</strong>" in log.html_snapshot
+        assert f"/uploads/produtos/{numero.lower()}.webp" in log.html_snapshot
+        assert "Total confirmado" in log.html_snapshot
+        assert "Ver meus pedidos" in log.html_snapshot
+        assert "https://loja.example.test/meus-pedidos" in log.html_snapshot
+        assert "Ir para a home da Bia Collections" in log.html_snapshot
+        assert "https://loja.example.test" in log.html_snapshot
+        assert "Ver Instagram" in log.html_snapshot
+        assert "https://www.instagram.com/biacollectionstore" in log.html_snapshot
     for log, numero, customer_email in [
         (admin_logs[0], "EMAILPAY1", "cliente-email-card@example.com"),
         (admin_logs[1], "EMAILPAY2", "cliente-email-webhook@example.com"),
@@ -3420,6 +3467,10 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert by_event["pagamento_recusado"]["status"] == "ativo"
     assert by_event["pedido_preparando"]["status"] == "ativo"
     assert by_event["interno_estoque_baixo"]["status"] == "ativo"
+    assert "Ver meus pedidos" in by_event["pagamento_aprovado"]["html"]
+    assert "Ver Instagram" in by_event["pagamento_aprovado"]["html"]
+    assert "Ir para a home da Bia Collections" in by_event["pagamento_aprovado"]["html"]
+    assert "pedido_itens_html" in by_event["pagamento_aprovado"]["html"]
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
     assert "pedido_itens_html" in by_event["pedido_criado"]["html"]

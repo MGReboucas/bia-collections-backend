@@ -132,6 +132,20 @@ ORDER_CREATED_TEMPLATE_PREVIEW_INCOMPATIBLE_MARKERS = (
     "|safe",
     "|default('', true)",
 )
+PAYMENT_APPROVED_TEMPLATE_REFRESH_SLUGS = {"payment-approved", "admin-default-pagamento-aprovado"}
+PAYMENT_APPROVED_TEMPLATE_REFRESH_MARKERS = (
+    "Total confirmado: <strong>{{order_total}}</strong>",
+    "Total confirmado: <strong>{{pedido_total}}</strong>",
+    "Agora vamos separar seus produtos",
+    "link_meus_pedidos",
+    "orders_url",
+    "Ir para a home da Bia Collections",
+    "Ver Instagram",
+)
+PAYMENT_APPROVED_TEMPLATE_CURRENT_MARKERS = (
+    "order_items_html",
+    "pedido_itens_html",
+)
 
 
 def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
@@ -181,6 +195,34 @@ def _refresh_order_created_template_if_old(template: EmailTemplate, data: dict[s
     ):
         return
     if not any(marker in content for marker in ORDER_CREATED_TEMPLATE_REFRESH_MARKERS):
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _refresh_payment_approved_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
+    if data["slug"] not in PAYMENT_APPROVED_TEMPLATE_REFRESH_SLUGS:
+        return
+
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in (
+            "nome",
+            "name",
+            "subject",
+            "preheader",
+            "html",
+            "html_template",
+            "text_template",
+            "variables_schema",
+        )
+    )
+    if any(marker in content for marker in PAYMENT_APPROVED_TEMPLATE_CURRENT_MARKERS):
+        return
+    if not any(marker in content for marker in PAYMENT_APPROVED_TEMPLATE_REFRESH_MARKERS):
         return
 
     for key, value in data.items():
@@ -321,12 +363,47 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         subject="Pagamento aprovado - Pedido {{order_number}}",
         preheader="Seu pagamento foi confirmado.",
         title="Pagamento aprovado",
-        intro="Ola {{customer_name}}, o pagamento do pedido {{order_number}} foi aprovado.",
-        body_html="<p>Agora vamos separar seus produtos e avisar quando o pedido avancar.</p>",
-        text_template="Pagamento aprovado para o pedido {{order_number}}.",
-        variables=("customer_name", "order_number", "store_url"),
-        cta_label="Ver pedido",
-        cta_url="{{store_url}}/meus-pedidos",
+        intro="Olá {{customer_name}}, o pagamento do pedido {{order_number}} foi aprovado com sucesso.",
+        body_html=(
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Tudo certo com o pagamento. Agora vamos separar seus produtos com cuidado e avisar quando o pedido for enviado.</p>"
+            "{{order_items_html}}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Total confirmado</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{order_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Você pode acompanhar cada atualização em Meus pedidos ou voltar para a loja para conferir as novidades.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{store_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}, o pagamento do pedido {{order_number}} foi aprovado. "
+            "Itens: {{order_items_text}}. Total confirmado: {{order_total}}. Acompanhe em {{orders_url}}. "
+            "Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
+        ),
+        variables=(
+            "customer_name",
+            "order_number",
+            "order_total",
+            "order_items_html",
+            "order_items_text",
+            "orders_url",
+            "store_home_url",
+            "store_url",
+            "instagram_url",
+        ),
+        cta_label="Ver meus pedidos",
+        cta_url="{{orders_url}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="Pagamento recusado",
@@ -594,16 +671,48 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         assunto="Pagamento aprovado - Pedido {{pedido_numero}}",
         title="Pagamento aprovado",
         preheader="Seu pagamento foi confirmado.",
-        intro="Ola {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado.",
+        intro="Olá {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado com sucesso.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Total confirmado: <strong>{{pedido_total}}</strong>.</p>"
-            "<p style=\"margin: 0;\">Agora vamos separar seus produtos e avisar quando o pedido for enviado.</p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Tudo certo com o pagamento. Agora vamos separar seus produtos com cuidado e avisar quando o pedido for enviado.</p>"
+            "{{pedido_itens_html}}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Total confirmado</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{pedido_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Você pode acompanhar cada atualização em Meus pedidos ou voltar para a loja para conferir as novidades.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{loja_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado. "
-            "Total confirmado: {{pedido_total}}. Agora vamos separar seus produtos."
+            "Olá {{cliente_nome}}, o pagamento do pedido {{pedido_numero}} foi aprovado. "
+            "Itens: {{pedido_itens_text}}. Total confirmado: {{pedido_total}}. Acompanhe em {{link_meus_pedidos}}. "
+            "Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
         ),
-        variables=("cliente_nome", "pedido_numero", "pedido_total", "loja_nome", "loja_url"),
+        variables=(
+            "cliente_nome",
+            "pedido_numero",
+            "pedido_total",
+            "pedido_itens_html",
+            "pedido_itens_text",
+            "link_meus_pedidos",
+            "loja_home_url",
+            "loja_nome",
+            "loja_url",
+            "instagram_url",
+        ),
+        cta_label="Ver meus pedidos",
+        cta_url="{{link_meus_pedidos}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _admin_template(
         nome="Pagamento recusado",
@@ -1169,6 +1278,7 @@ def seed_email_automation(db: Session | None = None) -> None:
             else:
                 _refresh_access_code_template_if_old(template, data)
                 _refresh_order_created_template_if_old(template, data)
+                _refresh_payment_approved_template_if_old(template, data)
             templates_by_slug[data["slug"]] = template
 
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
@@ -1176,6 +1286,7 @@ def seed_email_automation(db: Session | None = None) -> None:
             if template:
                 _refresh_access_code_template_if_old(template, data)
                 _refresh_order_created_template_if_old(template, data)
+                _refresh_payment_approved_template_if_old(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 continue
 
