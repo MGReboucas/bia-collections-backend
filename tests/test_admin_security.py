@@ -2952,6 +2952,55 @@ def test_pagamento_recusado_usa_template_admin_com_recuperacao_de_compra(client,
     assert "Ver Instagram" in log.html_snapshot
 
 
+def test_pagamento_pendente_usa_template_admin_com_chamada_para_finalizar(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    order_id, _ = create_order_record(
+        username="cliente-email-pending",
+        email="cliente-email-pending@example.com",
+        numero="EMAILPEND1",
+        forma_pagamento="pix",
+        total=138.0,
+    )
+    email_service_module = importlib.import_module("app.modules.email.service")
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.id == order_id).one()
+        email_service_module.trigger_order_email_event(db, "payment_pending", pedido)
+    finally:
+        db.close()
+
+    logs = email_logs()
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.template_slug == "admin-default-pagamento-pendente"
+    payload = assert_email_log_snapshot(
+        log,
+        event_key="pagamento_pendente",
+        recipient="cliente-email-pending@example.com",
+        status_log="pendente",
+        subject_contains="Pagamento pendente - Pedido EMAILPEND1",
+        html_contains="Pagamento pendente",
+        text_contains="Finalize o pagamento",
+        payload_values={"pedido_numero": "EMAILPEND1", "cliente_nome": "cliente-email-pending"},
+    )
+    assert log.dedupe_key == "pagamento_pendente:EMAILPEND1"
+    assert payload["link_meus_pedidos"] == "http://localhost:3000/meus-pedidos"
+    assert "Finalize o pagamento para garantir seus produtos" in log.html_snapshot
+    assert "Enquanto o pagamento não é confirmado" in log.html_snapshot
+    assert "Resumo do pedido" in log.html_snapshot
+    assert "Produto EMAILPEND1" in log.html_snapshot
+    assert "Quantidade: <strong>1</strong>" in log.html_snapshot
+    assert "Cor: <strong>Dourado</strong>" in log.html_snapshot
+    assert "Modelo/Tamanho: <strong>Unico</strong>" in log.html_snapshot
+    assert "/uploads/produtos/emailpend1.webp" in log.html_snapshot
+    assert "Total do pedido" in log.html_snapshot
+    assert "Finalizar pagamento" in log.html_snapshot
+    assert "http://localhost:3000/meus-pedidos" in log.html_snapshot
+    assert "Ir para a home da Bia Collections" in log.html_snapshot
+    assert "Ver Instagram" in log.html_snapshot
+
+
 def test_webhook_aprovado_repetido_nao_duplica_email_admin(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     sent, _ = patch_service_email_provider(monkeypatch)
@@ -3524,6 +3573,11 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert "Ir para a home da Bia Collections" in by_event["pagamento_recusado"]["html"]
     assert "pedido_itens_html" in by_event["pagamento_recusado"]["html"]
     assert "Ainda dá tempo" in by_event["pagamento_recusado"]["html"]
+    assert "Finalizar pagamento" in by_event["pagamento_pendente"]["html"]
+    assert "Ver Instagram" in by_event["pagamento_pendente"]["html"]
+    assert "Ir para a home da Bia Collections" in by_event["pagamento_pendente"]["html"]
+    assert "pedido_itens_html" in by_event["pagamento_pendente"]["html"]
+    assert "garantir seus produtos" in by_event["pagamento_pendente"]["html"]
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
     assert "pedido_itens_html" in by_event["pedido_criado"]["html"]

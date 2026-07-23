@@ -158,6 +158,18 @@ PAYMENT_REFUSED_TEMPLATE_CURRENT_MARKERS = (
     "Ainda dá tempo",
     "Ainda da tempo",
 )
+PAYMENT_PENDING_TEMPLATE_REFRESH_SLUGS = {"payment-pending", "admin-default-pagamento-pendente"}
+PAYMENT_PENDING_TEMPLATE_REFRESH_MARKERS = (
+    "Assim que o pagamento for confirmado",
+    "Ainda estamos aguardando a confirmacao do pagamento",
+    "Se voce ja pagou",
+    "Total do pedido: <strong>{{pedido_total}}</strong>",
+)
+PAYMENT_PENDING_TEMPLATE_CURRENT_MARKERS = (
+    "order_items_html",
+    "pedido_itens_html",
+    "Finalizar pagamento",
+)
 
 
 def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
@@ -263,6 +275,34 @@ def _refresh_payment_refused_template_if_old(template: EmailTemplate, data: dict
     if any(marker in content for marker in PAYMENT_REFUSED_TEMPLATE_CURRENT_MARKERS):
         return
     if not any(marker in content for marker in PAYMENT_REFUSED_TEMPLATE_REFRESH_MARKERS):
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _refresh_payment_pending_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
+    if data["slug"] not in PAYMENT_PENDING_TEMPLATE_REFRESH_SLUGS:
+        return
+
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in (
+            "nome",
+            "name",
+            "subject",
+            "preheader",
+            "html",
+            "html_template",
+            "text_template",
+            "variables_schema",
+        )
+    )
+    if any(marker in content for marker in PAYMENT_PENDING_TEMPLATE_CURRENT_MARKERS):
+        return
+    if not any(marker in content for marker in PAYMENT_PENDING_TEMPLATE_REFRESH_MARKERS):
         return
 
     for key, value in data.items():
@@ -503,12 +543,53 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         slug="payment-pending",
         category="pagamentos",
         subject="Pagamento pendente - Pedido {{order_number}}",
-        preheader="Seu pagamento ainda esta em analise.",
+        preheader="Finalize o pagamento para garantir seus produtos.",
         title="Pagamento pendente",
-        intro="Ola {{customer_name}}, seu pedido {{order_number}} ainda esta aguardando confirmacao.",
-        body_html="<p>Assim que o pagamento for confirmado, voce recebera um novo aviso.</p>",
-        text_template="Pagamento pendente para o pedido {{order_number}}.",
-        variables=("customer_name", "order_number"),
+        intro="Olá {{customer_name}}, o pedido {{order_number}} ainda está aguardando pagamento.",
+        body_html=(
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "<strong>Finalize o pagamento para garantir seus produtos.</strong></p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Enquanto o pagamento não é confirmado, seu pedido ainda não segue para preparo. "
+            "Acesse Meus pedidos para concluir agora ou escolher outra forma de pagamento.</p>"
+            "{{order_items_html}}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Total do pedido</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{order_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Se você já concluiu o pagamento, pode ficar tranquila: avisaremos assim que a confirmação chegar.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{store_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}, o pedido {{order_number}} ainda está aguardando pagamento. "
+            "Itens: {{order_items_text}}. Total do pedido: {{order_total}}. "
+            "Finalize o pagamento para garantir seus produtos em {{orders_url}}. "
+            "Se você já pagou, avisaremos assim que a confirmação chegar. Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
+        ),
+        variables=(
+            "customer_name",
+            "order_number",
+            "order_total",
+            "order_items_html",
+            "order_items_text",
+            "orders_url",
+            "store_home_url",
+            "store_url",
+            "instagram_url",
+        ),
+        cta_label="Finalizar pagamento",
+        cta_url="{{orders_url}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="Pagamento expirado",
@@ -853,20 +934,53 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         evento="pagamento_pendente",
         assunto="Pagamento pendente - Pedido {{pedido_numero}}",
         title="Pagamento pendente",
-        preheader="Ainda estamos aguardando a confirmacao do pagamento.",
-        intro="Ola {{cliente_nome}}, o pedido {{pedido_numero}} ainda esta aguardando pagamento.",
+        preheader="Finalize o pagamento para garantir seus produtos.",
+        intro="Olá {{cliente_nome}}, o pedido {{pedido_numero}} ainda está aguardando pagamento.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Se voce ja pagou, pode ficar tranquila: "
-            "avisaremos assim que a confirmacao chegar.</p>"
-            "<p style=\"margin: 0;\">Total do pedido: <strong>{{pedido_total}}</strong>.</p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "<strong>Finalize o pagamento para garantir seus produtos.</strong></p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Enquanto o pagamento não é confirmado, seu pedido ainda não segue para preparo. "
+            "Acesse Meus pedidos para concluir agora ou escolher outra forma de pagamento.</p>"
+            "{{pedido_itens_html}}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Total do pedido</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{pedido_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Se você já concluiu o pagamento, pode ficar tranquila: avisaremos assim que a confirmação chegar.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{loja_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, o pedido {{pedido_numero}} ainda esta aguardando pagamento. "
-            "Total: {{pedido_total}}."
+            "Olá {{cliente_nome}}, o pedido {{pedido_numero}} ainda está aguardando pagamento. "
+            "Itens: {{pedido_itens_text}}. Total do pedido: {{pedido_total}}. "
+            "Finalize o pagamento para garantir seus produtos em {{link_meus_pedidos}}. "
+            "Se você já pagou, avisaremos assim que a confirmação chegar. Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
         ),
-        variables=("cliente_nome", "pedido_numero", "pedido_total", "link_pagamento", "loja_nome", "loja_url"),
-        cta_label="Ver pedido",
-        cta_url="{{loja_url}}/conta/pedidos",
+        variables=(
+            "cliente_nome",
+            "pedido_numero",
+            "pedido_total",
+            "pedido_itens_html",
+            "pedido_itens_text",
+            "link_meus_pedidos",
+            "loja_home_url",
+            "loja_nome",
+            "loja_url",
+            "instagram_url",
+        ),
+        cta_label="Finalizar pagamento",
+        cta_url="{{link_meus_pedidos}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _admin_template(
         nome="Pagamento expirado",
@@ -1392,6 +1506,7 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_order_created_template_if_old(template, data)
                 _refresh_payment_approved_template_if_old(template, data)
                 _refresh_payment_refused_template_if_old(template, data)
+                _refresh_payment_pending_template_if_old(template, data)
             templates_by_slug[data["slug"]] = template
 
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
@@ -1401,6 +1516,7 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_order_created_template_if_old(template, data)
                 _refresh_payment_approved_template_if_old(template, data)
                 _refresh_payment_refused_template_if_old(template, data)
+                _refresh_payment_pending_template_if_old(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 continue
 
