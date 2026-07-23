@@ -3353,19 +3353,47 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     body = response.json()
     by_event = {item["evento"]: item for item in body}
     assert set(by_event) == {
+        "boas_vindas",
         "pedido_criado",
         "pagamento_aprovado",
+        "pagamento_recusado",
+        "pagamento_pendente",
+        "pagamento_expirado",
+        "pedido_preparando",
         "pedido_enviado",
+        "pedido_entregue",
+        "pedido_cancelado",
+        "reembolso_aprovado",
+        "reembolso_processado",
+        "nota_fiscal_recibo",
+        "troca_devolucao_recebida",
+        "troca_devolucao_aprovada",
+        "troca_devolucao_recusada",
         "recuperacao_senha",
         "codigo_acesso",
+        "senha_alterada",
+        "dados_sensiveis_alterados",
+        "produto_voltou_estoque",
+        "carrinho_abandonado",
         "cupom_disponivel",
+        "avaliacao_pedido",
+        "interno_novo_pedido",
+        "interno_pagamento_confirmado",
+        "interno_estoque_baixo",
+        "interno_troca_devolucao",
+        "interno_falha_operacional",
         "manual",
     }
     assert by_event["pedido_criado"]["status"] == "ativo"
     assert by_event["manual"]["status"] == "rascunho"
     assert by_event["codigo_acesso"]["status"] == "ativo"
+    assert by_event["pagamento_recusado"]["status"] == "ativo"
+    assert by_event["pedido_preparando"]["status"] == "ativo"
+    assert by_event["interno_estoque_baixo"]["status"] == "ativo"
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
+    assert "{{produto_nome}}" in by_event["produto_voltou_estoque"]["assunto"]
+    assert "{{tipo_falha}}" in by_event["interno_falha_operacional"]["html"]
     assert 'data-bia-email-logo="true"' in by_event["pedido_criado"]["html"]
     assert "bia-collections-logooficial.png" in by_event["pedido_criado"]["html"]
     assert "Bia Collections" in by_event["pedido_criado"]["html"]
@@ -3375,7 +3403,7 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     seed_email_automation()
     db = SessionLocal()
     try:
-        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 7
+        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 30
     finally:
         db.close()
 

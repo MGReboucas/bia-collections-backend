@@ -385,9 +385,12 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
                 "to": user.email,
                 "email": user.email,
                 "customer_name": user.nome_completo or user.username,
+                "cliente_nome": user.nome_completo or user.username,
                 "user_id": user.id,
                 "store_name": settings.STORE_NAME,
+                "loja_nome": settings.STORE_NAME,
                 "store_url": settings.STORE_URL or settings.FRONTEND_URL,
+                "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
                 "dedupe_key": f"password_changed:{user.id}:{registro_valido.id}",
             },
         )

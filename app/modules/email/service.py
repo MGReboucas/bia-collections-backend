@@ -44,12 +44,35 @@ ADMIN_ORDER_PAID_EVENT_KEY = "admin_order_paid"
 ADMIN_ORDER_PAID_TEMPLATE_SLUG = "admin-order-paid"
 _VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.]+)\s*}}")
 ADMIN_EVENT_TO_AUTOMATION_EVENT = {
+    "boas_vindas": "user_registered",
     "pedido_criado": "order_created",
     "pagamento_aprovado": "payment_approved",
+    "pagamento_recusado": "payment_refused",
+    "pagamento_pendente": "payment_pending",
+    "pagamento_expirado": "payment_expired",
+    "pedido_preparando": "order_preparing",
     "pedido_enviado": "order_shipped",
+    "pedido_entregue": "order_delivered",
+    "pedido_cancelado": "order_cancelled",
+    "reembolso_aprovado": "refund_approved",
+    "reembolso_processado": "refund_completed",
+    "nota_fiscal_recibo": "invoice_receipt_available",
+    "troca_devolucao_recebida": "return_exchange_requested",
+    "troca_devolucao_aprovada": "return_exchange_approved",
+    "troca_devolucao_recusada": "return_exchange_refused",
     "recuperacao_senha": "password_reset",
     "codigo_acesso": "two_factor_code",
+    "senha_alterada": "password_changed",
+    "dados_sensiveis_alterados": "sensitive_data_changed",
+    "produto_voltou_estoque": "product_back_in_stock",
+    "carrinho_abandonado": "abandoned_cart",
     "cupom_disponivel": "coupon_available",
+    "avaliacao_pedido": "review_request",
+    "interno_novo_pedido": "internal_order_created",
+    "interno_pagamento_confirmado": "internal_payment_confirmed",
+    "interno_estoque_baixo": "internal_low_stock",
+    "interno_troca_devolucao": "internal_return_exchange_requested",
+    "interno_falha_operacional": "internal_operational_failure",
 }
 AUTOMATION_EVENT_TO_ADMIN_EVENT = {
     event_key: admin_event for admin_event, event_key in ADMIN_EVENT_TO_AUTOMATION_EVENT.items()
@@ -58,6 +81,13 @@ AUTOMATION_EVENT_TO_ADMIN_EVENT.update(
     {admin_event: admin_event for admin_event in ADMIN_EVENT_TO_AUTOMATION_EVENT}
 )
 AUTOMATION_EVENT_TO_ADMIN_EVENT["tracking_code_available"] = "pedido_enviado"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["invoice_issued"] = "nota_fiscal_recibo"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["payment_receipt"] = "nota_fiscal_recibo"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["refund_requested"] = "troca_devolucao_recebida"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["refund_approved"] = "reembolso_aprovado"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["abandoned_cart_1h"] = "carrinho_abandonado"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["abandoned_cart_24h"] = "carrinho_abandonado"
+AUTOMATION_EVENT_TO_ADMIN_EVENT["abandoned_cart_3d"] = "carrinho_abandonado"
 AUTOMATION_EVENT_TO_ADMIN_EVENT["manual"] = "manual"
 
 
@@ -304,6 +334,7 @@ class EmailAutomationService:
             return event_key, payload
 
         admin_payload = dict(payload)
+        self._fill_admin_payload_aliases(admin_payload)
         order_number = self._optional_text(
             admin_payload.get("pedido_numero") or admin_payload.get("order_number")
         )
@@ -317,6 +348,37 @@ class EmailAutomationService:
             else:
                 admin_payload["dedupe_key"] = f"{admin_event}:{order_number}"
         return admin_event, admin_payload
+
+    def _fill_admin_payload_aliases(self, payload: dict[str, Any]) -> None:
+        aliases = {
+            "cliente_nome": ("customer_name", "name"),
+            "cliente_email": ("customer_email",),
+            "loja_nome": ("store_name",),
+            "loja_url": ("store_url",),
+            "pedido_numero": ("order_number",),
+            "pedido_total": ("order_total",),
+            "codigo_rastreio": ("tracking_code",),
+            "link_rastreio": ("tracking_url",),
+            "produto_nome": ("product_name",),
+            "produto_url": ("product_url",),
+            "carrinho_url": ("cart_url",),
+            "cupom_codigo": ("coupon_code",),
+            "cupom_descricao": ("coupon_description",),
+            "cupom_valor": ("coupon_value",),
+            "cupom_validade": ("coupon_expires_at",),
+            "link_avaliacao": ("review_url",),
+            "valor_reembolso": ("refund_amount", "refund_total"),
+            "prazo_reembolso": ("refund_deadline",),
+            "link_nota_fiscal": ("invoice_url",),
+            "link_recibo": ("receipt_url",),
+        }
+        for target, sources in aliases.items():
+            if payload.get(target):
+                continue
+            for source in sources:
+                if payload.get(source):
+                    payload[target] = payload[source]
+                    break
 
     def _enqueue_templates(
         self,
