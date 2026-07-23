@@ -2904,6 +2904,54 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(clie
     assert [item["to"] for item in sent] == ["dona@example.com", "dona@example.com"]
 
 
+def test_pagamento_recusado_usa_template_admin_com_recuperacao_de_compra(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    order_id, _ = create_order_record(
+        username="cliente-email-refused",
+        email="cliente-email-refused@example.com",
+        numero="EMAILREF1",
+        forma_pagamento="cartao",
+        total=88.0,
+    )
+    email_service_module = importlib.import_module("app.modules.email.service")
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.id == order_id).one()
+        email_service_module.trigger_order_email_event(db, "payment_refused", pedido)
+    finally:
+        db.close()
+
+    logs = email_logs()
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.template_slug == "admin-default-pagamento-recusado"
+    payload = assert_email_log_snapshot(
+        log,
+        event_key="pagamento_recusado",
+        recipient="cliente-email-refused@example.com",
+        status_log="pendente",
+        subject_contains="Pagamento não aprovado - Pedido EMAILREF1",
+        html_contains="Pagamento não aprovado",
+        text_contains="Tente novamente",
+        payload_values={"pedido_numero": "EMAILREF1", "cliente_nome": "cliente-email-refused"},
+    )
+    assert log.dedupe_key == "pagamento_recusado:EMAILREF1"
+    assert payload["link_meus_pedidos"] == "http://localhost:3000/meus-pedidos"
+    assert "Seu pedido ainda pode ser concluído" in log.html_snapshot
+    assert "Resumo do pedido" in log.html_snapshot
+    assert "Produto EMAILREF1" in log.html_snapshot
+    assert "Quantidade: <strong>1</strong>" in log.html_snapshot
+    assert "Cor: <strong>Dourado</strong>" in log.html_snapshot
+    assert "Modelo/Tamanho: <strong>Unico</strong>" in log.html_snapshot
+    assert "/uploads/produtos/emailref1.webp" in log.html_snapshot
+    assert "Total do pedido" in log.html_snapshot
+    assert "Tentar novamente" in log.html_snapshot
+    assert "http://localhost:3000/meus-pedidos" in log.html_snapshot
+    assert "Ir para a home da Bia Collections" in log.html_snapshot
+    assert "Ver Instagram" in log.html_snapshot
+
+
 def test_webhook_aprovado_repetido_nao_duplica_email_admin(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     sent, _ = patch_service_email_provider(monkeypatch)
@@ -3471,6 +3519,11 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert "Ver Instagram" in by_event["pagamento_aprovado"]["html"]
     assert "Ir para a home da Bia Collections" in by_event["pagamento_aprovado"]["html"]
     assert "pedido_itens_html" in by_event["pagamento_aprovado"]["html"]
+    assert "Tentar novamente" in by_event["pagamento_recusado"]["html"]
+    assert "Ver Instagram" in by_event["pagamento_recusado"]["html"]
+    assert "Ir para a home da Bia Collections" in by_event["pagamento_recusado"]["html"]
+    assert "pedido_itens_html" in by_event["pagamento_recusado"]["html"]
+    assert "Ainda dá tempo" in by_event["pagamento_recusado"]["html"]
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
     assert "pedido_itens_html" in by_event["pedido_criado"]["html"]
