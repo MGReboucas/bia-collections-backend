@@ -28,6 +28,8 @@ def _template(
     variables: tuple[str, ...],
     cta_label: str | None = None,
     cta_url: str | None = None,
+    footer_cta_label: str | None = None,
+    footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -42,6 +44,8 @@ def _template(
             body_html=body_html,
             cta_label=cta_label,
             cta_url=cta_url,
+            footer_cta_label=footer_cta_label,
+            footer_cta_url=footer_cta_url,
         ),
         "text_template": text_template,
         "variables_schema": _schema(*variables),
@@ -64,6 +68,8 @@ def _admin_template(
     status: str = "ativo",
     cta_label: str | None = None,
     cta_url: str | None = None,
+    footer_cta_label: str | None = None,
+    footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
     html = brand_email_html(
         title=title,
@@ -72,6 +78,8 @@ def _admin_template(
         body_html=body_html,
         cta_label=cta_label,
         cta_url=cta_url,
+        footer_cta_label=footer_cta_label,
+        footer_cta_url=footer_cta_url,
     )
     return {
         "nome": nome,
@@ -108,6 +116,18 @@ ACCESS_CODE_TEMPLATE_REFRESH_MARKERS = (
     "width: 260px",
     'width="260"',
 )
+ORDER_CREATED_TEMPLATE_REFRESH_SLUGS = {"order-created", "admin-default-pedido-criado"}
+ORDER_CREATED_TEMPLATE_REFRESH_MARKERS = (
+    "Total do pedido: <strong>{{order_total}}</strong>",
+    "Total do pedido: <strong>{{pedido_total}}</strong>",
+    "Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.",
+)
+ORDER_CREATED_TEMPLATE_CURRENT_MARKERS = (
+    "order_items_html",
+    "pedido_itens_html",
+    "link_meus_pedidos",
+    "orders_url",
+)
 
 
 def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
@@ -127,6 +147,34 @@ def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str
         )
     )
     if not any(marker in content for marker in ACCESS_CODE_TEMPLATE_REFRESH_MARKERS):
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _refresh_order_created_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
+    if data["slug"] not in ORDER_CREATED_TEMPLATE_REFRESH_SLUGS:
+        return
+
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in (
+            "nome",
+            "name",
+            "subject",
+            "preheader",
+            "html",
+            "html_template",
+            "text_template",
+            "variables_schema",
+        )
+    )
+    if any(marker in content for marker in ORDER_CREATED_TEMPLATE_CURRENT_MARKERS):
+        return
+    if not any(marker in content for marker in ORDER_CREATED_TEMPLATE_REFRESH_MARKERS):
         return
 
     for key, value in data.items():
@@ -216,14 +264,49 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         slug="order-created",
         category="pedidos",
         subject="Recebemos seu pedido {{order_number}}",
-        preheader="Seu pedido foi criado e esta aguardando pagamento.",
+        preheader="Seu pedido foi criado e está aguardando pagamento.",
         title="Pedido recebido",
-        intro="Ola {{customer_name}}, recebemos seu pedido {{order_number}}.",
-        body_html="<p>Total do pedido: <strong>{{order_total}}</strong>.</p><p>Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>",
-        text_template="Pedido {{order_number}} recebido. Total: {{order_total}}.",
-        variables=("customer_name", "order_number", "order_total", "store_url"),
-        cta_label="Acompanhar pedido",
-        cta_url="{{store_url}}/meus-pedidos",
+        intro="Olá {{customer_name}}, recebemos seu pedido {{order_number}} e já separamos os detalhes para você.",
+        body_html=(
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Obrigada pela compra. Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>"
+            "{{ order_items_html|default('', true)|safe }}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Total do pedido</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{order_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Você pode acompanhar cada atualização em Meus pedidos ou voltar para a loja para conferir as novidades.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{store_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}, recebemos seu pedido {{order_number}}. "
+            "Itens: {{order_items_text}}. Total do pedido: {{order_total}}. "
+            "Acompanhe em {{orders_url}}. Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
+        ),
+        variables=(
+            "customer_name",
+            "order_number",
+            "order_total",
+            "order_items_html",
+            "order_items_text",
+            "orders_url",
+            "store_home_url",
+            "store_url",
+            "instagram_url",
+        ),
+        cta_label="Ver meus pedidos",
+        cta_url="{{orders_url}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="Pagamento aprovado",
@@ -455,16 +538,48 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         assunto="Recebemos seu pedido {{pedido_numero}}",
         title="Pedido recebido",
         preheader="Seu pedido foi criado na Bia Collections.",
-        intro="Ola {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}.",
+        intro="Olá {{cliente_nome}}, recebemos seu pedido {{pedido_numero}} e já separamos os detalhes para você.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Total do pedido: <strong>{{pedido_total}}</strong>.</p>"
-            "<p style=\"margin: 0;\">Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Obrigada pela compra. Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>"
+            "{{ pedido_itens_html|default('', true)|safe }}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Total do pedido</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{pedido_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Você pode acompanhar cada atualização em Meus pedidos ou voltar para a loja para conferir as novidades.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{loja_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}. "
-            "Total do pedido: {{pedido_total}}. Assim que o pagamento for confirmado, vamos preparar tudo com cuidado."
+            "Olá {{cliente_nome}}, recebemos seu pedido {{pedido_numero}}. "
+            "Itens: {{pedido_itens_text}}. Total do pedido: {{pedido_total}}. "
+            "Acompanhe em {{link_meus_pedidos}}. Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
         ),
-        variables=("cliente_nome", "pedido_numero", "pedido_total", "loja_nome", "loja_url"),
+        variables=(
+            "cliente_nome",
+            "pedido_numero",
+            "pedido_total",
+            "pedido_itens_html",
+            "pedido_itens_text",
+            "link_meus_pedidos",
+            "loja_home_url",
+            "loja_nome",
+            "loja_url",
+            "instagram_url",
+        ),
+        cta_label="Ver meus pedidos",
+        cta_url="{{link_meus_pedidos}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _admin_template(
         nome="Pagamento aprovado",
@@ -1047,12 +1162,14 @@ def seed_email_automation(db: Session | None = None) -> None:
                 session.flush()
             else:
                 _refresh_access_code_template_if_old(template, data)
+                _refresh_order_created_template_if_old(template, data)
             templates_by_slug[data["slug"]] = template
 
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
             template = session.query(EmailTemplate).filter(EmailTemplate.slug == data["slug"]).first()
             if template:
                 _refresh_access_code_template_if_old(template, data)
+                _refresh_order_created_template_if_old(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 continue
 

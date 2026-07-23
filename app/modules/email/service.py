@@ -13,11 +13,12 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.models.cupom import Cupom
 from app.models.pagamento import Pagamento
-from app.models.pedido import Pedido
+from app.models.pedido import ItemPedido, Pedido
+from app.models.produto import Produto
 from app.models.usuario import Usuario
 from app.modules.email.models import EmailAutomation, EmailLog, EmailTemplate
 from app.modules.email.provider import EmailProvider
-from app.modules.email.templates import brand_email_html, ensure_brand_logo_html
+from app.modules.email.templates import BRAND_INSTAGRAM_URL, brand_email_html, ensure_brand_logo_html
 
 try:
     from jinja2 import BaseLoader, Environment
@@ -43,6 +44,9 @@ MAX_ATTEMPTS = 3
 ADMIN_ORDER_PAID_EVENT_KEY = "admin_order_paid"
 ADMIN_ORDER_PAID_TEMPLATE_SLUG = "admin-order-paid"
 _VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.]+)\s*}}")
+_SAFE_VAR_PATTERN = re.compile(
+    r"{{\s*([a-zA-Z0-9_.]+)(?:\s*\|\s*default\([^{}]*\))?\s*\|\s*safe\s*}}"
+)
 ADMIN_EVENT_TO_AUTOMATION_EVENT = {
     "boas_vindas": "user_registered",
     "pedido_criado": "order_created",
@@ -585,11 +589,17 @@ class EmailAutomationService:
             env = Environment(loader=BaseLoader(), autoescape=html_escape)
             return env.from_string(template).render(**payload)
 
+        def replace_safe(match: re.Match[str]) -> str:
+            value = self._resolve_payload_value(payload, match.group(1))
+            return "" if value is None else str(value)
+
         def replace(match: re.Match[str]) -> str:
             value = self._resolve_payload_value(payload, match.group(1))
             rendered = "" if value is None else str(value)
             return html.escape(rendered) if html_escape else rendered
 
+        if html_escape:
+            template = _SAFE_VAR_PATTERN.sub(replace_safe, template)
         return _VAR_PATTERN.sub(replace, template)
 
     def _resolve_payload_value(self, payload: dict[str, Any], key: str) -> Any:
@@ -670,7 +680,12 @@ def build_order_email_payload(
         customer_name = user.nome_completo or user.username or ""
         customer_email = user.email
 
-    order_total = f"R$ {pedido.total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    order_total = _format_email_money(pedido.total)
+    store_home_url = _store_url()
+    orders_url = _store_url("/meus-pedidos")
+    order_items = _order_items_for_email(db, pedido)
+    order_items_html = _order_items_email_html(order_items)
+    order_items_text = _order_items_email_text(order_items)
     payload: dict[str, Any] = {
         "to": customer_email,
         "email": customer_email,
@@ -682,6 +697,10 @@ def build_order_email_payload(
         "pedido_numero": pedido.numero,
         "order_total": order_total,
         "pedido_total": order_total,
+        "order_items_html": order_items_html,
+        "pedido_itens_html": order_items_html,
+        "order_items_text": order_items_text,
+        "pedido_itens_text": order_items_text,
         "order_status": pedido.status,
         "pedido_status": pedido.status,
         "tracking_code": pedido.codigo_rastreio or "",
@@ -690,8 +709,14 @@ def build_order_email_payload(
         "link_rastreio": "",
         "store_name": settings.STORE_NAME,
         "loja_nome": settings.STORE_NAME,
-        "store_url": settings.STORE_URL or settings.FRONTEND_URL,
-        "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
+        "store_url": store_home_url,
+        "loja_url": store_home_url,
+        "store_home_url": store_home_url,
+        "loja_home_url": store_home_url,
+        "orders_url": orders_url,
+        "link_meus_pedidos": orders_url,
+        "instagram_url": BRAND_INSTAGRAM_URL,
+        "loja_instagram_url": BRAND_INSTAGRAM_URL,
         "payment_link": "",
         "link_pagamento": "",
         "pix_code": "",
@@ -736,6 +761,171 @@ def _payment_status_label(pedido: Pedido, pagamento: Pagamento | None) -> str:
 
 def _payment_method_label(pedido: Pedido, pagamento: Pagamento | None) -> str:
     return str((pagamento.tipo if pagamento else None) or pedido.forma_pagamento or "").strip() or "nao informado"
+
+
+def _format_email_money(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    formatted = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {formatted}"
+
+
+def _store_url(path: str = "") -> str:
+    base_url = (settings.STORE_URL or settings.FRONTEND_URL or "").strip().rstrip("/")
+    if not path:
+        return base_url or "/"
+    if not base_url:
+        return f"/{path.lstrip('/')}"
+    return f"{base_url}/{path.lstrip('/')}"
+
+
+def _email_public_url(value: Any) -> str:
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    if url.startswith(("http://", "https://", "data:", "cid:")):
+        return url
+    if url.startswith("//"):
+        return f"https:{url}"
+    for base_url in (settings.MP_NOTIFICATION_URL, settings.STORE_URL, settings.FRONTEND_URL):
+        base_url = str(base_url or "").strip().rstrip("/")
+        if base_url:
+            return f"{base_url}/{url.lstrip('/')}"
+    return url
+
+
+def _normalized_text(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _product_images_for_order_item(item: ItemPedido) -> list[Any]:
+    product = getattr(item, "produto", None)
+    images = list(getattr(product, "imagens", []) or [])
+    return sorted(
+        images,
+        key=lambda image: (
+            0 if getattr(image, "principal", False) else 1,
+            getattr(image, "ordem", None) if getattr(image, "ordem", None) is not None else 0,
+            getattr(image, "id", None) or 0,
+        ),
+    )
+
+
+def _order_items_for_email(db: Session, pedido: Pedido) -> list[ItemPedido]:
+    if not pedido.id:
+        return list(getattr(pedido, "itens", []) or [])
+    return (
+        db.query(ItemPedido)
+        .options(joinedload(ItemPedido.produto).joinedload(Produto.imagens))
+        .filter(ItemPedido.pedido_id == pedido.id)
+        .order_by(ItemPedido.id.asc())
+        .all()
+    )
+
+
+def _image_matches_color(image: Any, color: str) -> bool:
+    if not color:
+        return False
+    candidates = [
+        _normalized_text(getattr(image, "cor_nome", None)),
+        _normalized_text(getattr(image, "modelo_cor", None)),
+        _normalized_text(getattr(image, "modelo_nome", None)),
+    ]
+    return any(candidate and (candidate == color or color in candidate or candidate in color) for candidate in candidates)
+
+
+def _order_item_image_url(item: ItemPedido) -> str:
+    product = getattr(item, "produto", None)
+    images = _product_images_for_order_item(item)
+    color = _normalized_text(getattr(item, "cor", None))
+    for image in images:
+        if _image_matches_color(image, color):
+            return _email_public_url(getattr(image, "imagem_url", None))
+
+    product_image_url = getattr(product, "imagem_url", None)
+    if product_image_url:
+        return _email_public_url(product_image_url)
+    if images:
+        return _email_public_url(getattr(images[0], "imagem_url", None))
+    return ""
+
+
+def _order_items_email_text(items: list[ItemPedido]) -> str:
+    if not items:
+        return "Detalhes dos itens disponiveis em Meus pedidos"
+
+    lines = []
+    for item in items:
+        details = [
+            f"quantidade {getattr(item, 'quantidade', 0) or 0}",
+            f"cor {getattr(item, 'cor', None) or 'Nao informada'}",
+            f"modelo/tamanho {getattr(item, 'tamanho', None) or 'Nao informado'}",
+            f"valor unitario {_format_email_money(getattr(item, 'preco_unitario', 0))}",
+        ]
+        lines.append(f"{getattr(item, 'nome_produto', None) or 'Produto'} ({', '.join(details)})")
+    return "; ".join(lines)
+
+
+def _order_items_email_html(items: list[ItemPedido]) -> str:
+    if not items:
+        return (
+            '<p style="margin: 0 0 20px; text-align: center; color: #6f675f;">'
+            "Os detalhes dos itens ficam disponíveis em Meus pedidos.</p>"
+        )
+
+    rows = []
+    for index, item in enumerate(items):
+        name = html.escape(str(getattr(item, "nome_produto", None) or "Produto"))
+        quantity = html.escape(str(getattr(item, "quantidade", 0) or 0))
+        color = html.escape(str(getattr(item, "cor", None) or "Não informada"))
+        model = html.escape(str(getattr(item, "tamanho", None) or "Não informado"))
+        unit_price = html.escape(_format_email_money(getattr(item, "preco_unitario", 0)))
+        image_url = _order_item_image_url(item)
+        border_top = "border-top: 1px solid #eee8df;" if index else ""
+        if image_url:
+            image_html = (
+                f'<img src="{html.escape(image_url, quote=True)}" width="92" height="92" '
+                f'alt="{name}" '
+                'style="display: block; width: 92px; height: 92px; object-fit: cover; '
+                'border: 1px solid #eee8df; background: #f5f5f5;">'
+            )
+        else:
+            image_html = (
+                '<div style="width: 92px; height: 92px; border: 1px solid #eee8df; '
+                'background: #f5f5f5; color: #111111; font-family: Georgia, '
+                '\'Times New Roman\', serif; font-size: 22px; line-height: 92px; text-align: center;">BIA</div>'
+            )
+        rows.append(
+            "<tr>"
+            f'<td width="112" valign="top" style="padding: 14px 14px 14px 16px; {border_top}">'
+            f"{image_html}"
+            "</td>"
+            f'<td valign="top" style="padding: 14px 16px 14px 0; {border_top}">'
+            f'<p style="margin: 0 0 8px; font-family: Georgia, \'Times New Roman\', serif; '
+            f'font-size: 18px; line-height: 24px; color: #111111;">{name}</p>'
+            f'<p style="margin: 0 0 4px; font-family: Arial, Helvetica, sans-serif; '
+            f'font-size: 13px; line-height: 20px; color: #4e4a45;">Quantidade: <strong>{quantity}</strong></p>'
+            f'<p style="margin: 0 0 4px; font-family: Arial, Helvetica, sans-serif; '
+            f'font-size: 13px; line-height: 20px; color: #4e4a45;">Cor: <strong>{color}</strong></p>'
+            f'<p style="margin: 0 0 4px; font-family: Arial, Helvetica, sans-serif; '
+            f'font-size: 13px; line-height: 20px; color: #4e4a45;">Modelo/Tamanho: <strong>{model}</strong></p>'
+            f'<p style="margin: 0; font-family: Arial, Helvetica, sans-serif; '
+            f'font-size: 13px; line-height: 20px; color: #4e4a45;">Valor unitário: <strong>{unit_price}</strong></p>'
+            "</td>"
+            "</tr>"
+        )
+
+    return (
+        '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" '
+        'style="border-collapse: collapse; margin: 0 0 24px; border: 1px solid #e8e1d8; background: #fbfaf8;">'
+        '<tr><td colspan="2" style="padding: 14px 16px 0; font-family: Arial, Helvetica, sans-serif; '
+        'font-size: 11px; line-height: 16px; letter-spacing: 2px; text-transform: uppercase; '
+        'color: #8d7a62;">Resumo do pedido</td></tr>'
+        + "".join(rows)
+        + "</table>"
+    )
 
 
 def build_admin_order_paid_email_payload(

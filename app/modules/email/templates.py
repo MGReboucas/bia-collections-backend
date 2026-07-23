@@ -202,6 +202,8 @@ def brand_email_html(
     cta_label: str | None = None,
     cta_url: str | None = None,
     footer_note: str | None = None,
+    footer_cta_label: str | None = None,
+    footer_cta_url: str | None = None,
 ) -> str:
     code_block = ""
     if code:
@@ -226,6 +228,13 @@ def brand_email_html(
         """
 
     footer = footer_note or "Se você não solicitou esta mensagem, ignore este e-mail."
+    footer_cta_block = ""
+    if footer_cta_label and footer_cta_url:
+        footer_cta_block = f"""
+                <div style="margin-top: 16px;">
+                  <a href="{footer_cta_url}" style="display: inline-block; border: 1px solid {BRAND_COLORS['gold']}; color: {BRAND_COLORS['white']}; font-family: Arial, Helvetica, sans-serif; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; text-decoration: none; padding: 12px 22px;">{footer_cta_label}</a>
+                </div>
+        """
 
     return f"""<!doctype html>
 <html lang="pt-BR">
@@ -259,6 +268,7 @@ def brand_email_html(
             <tr>
               <td style="padding: 24px 36px 36px; background: {BRAND_COLORS['black']}; color: {BRAND_COLORS['white']}; text-align: center;">
                 <p style="margin: 0; font-family: Arial, Helvetica, sans-serif; font-size: 12px; line-height: 20px; color: #d9d2ca;">{footer}</p>
+                {footer_cta_block}
               </td>
             </tr>
           </table>

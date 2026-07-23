@@ -2594,7 +2594,23 @@ def email_logs() -> list[EmailLog]:
 def create_basic_product(nome: str = "Vestido Email", preco: float = 50.0) -> int:
     db = SessionLocal()
     try:
-        produto = Produto(nome=nome, descricao="Produto para email", preco=preco, ativo=True)
+        produto = Produto(
+            nome=nome,
+            descricao="Produto para email",
+            preco=preco,
+            imagem_url="/uploads/produtos/vestido-email.webp",
+            ativo=True,
+            imagens=[
+                ProdutoImagem(
+                    imagem_url="/uploads/produtos/vestido-email.webp",
+                    ordem=0,
+                    principal=True,
+                    modelo_nome="Azul",
+                    modelo_cor="Azul",
+                    cor_nome="Azul",
+                )
+            ],
+        )
         db.add(produto)
         db.commit()
         db.refresh(produto)
@@ -2700,6 +2716,19 @@ def test_pedido_criado_usa_template_admin_e_registra_log_renderizado(client, mon
     )
     assert log.dedupe_key == f"pedido_criado:{numero}"
     assert payload["pedido_total"] == "R$ 110,00"
+    assert payload["link_meus_pedidos"] == "http://localhost:3000/meus-pedidos"
+    assert "Resumo do pedido" in log.html_snapshot
+    assert "Vestido Email" in log.html_snapshot
+    assert "Quantidade: <strong>2</strong>" in log.html_snapshot
+    assert "Cor: <strong>Azul</strong>" in log.html_snapshot
+    assert "Modelo/Tamanho: <strong>M</strong>" in log.html_snapshot
+    assert "/uploads/produtos/vestido-email.webp" in log.html_snapshot
+    assert "Ver meus pedidos" in log.html_snapshot
+    assert "http://localhost:3000/meus-pedidos" in log.html_snapshot
+    assert "Ir para a home da Bia Collections" in log.html_snapshot
+    assert "Ver Instagram" in log.html_snapshot
+    assert "https://www.instagram.com/biacollectionstore" in log.html_snapshot
+    assert "Se você não solicitou esta mensagem" in log.html_snapshot
 
 
 def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(client, monkeypatch):
@@ -3392,6 +3421,9 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert by_event["interno_estoque_baixo"]["status"] == "ativo"
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
+    assert "pedido_itens_html" in by_event["pedido_criado"]["html"]
+    assert "Ver meus pedidos" in by_event["pedido_criado"]["html"]
+    assert "Ver Instagram" in by_event["pedido_criado"]["html"]
     assert "{{produto_nome}}" in by_event["produto_voltou_estoque"]["assunto"]
     assert "{{tipo_falha}}" in by_event["interno_falha_operacional"]["html"]
     assert 'data-bia-email-logo="true"' in by_event["pedido_criado"]["html"]
