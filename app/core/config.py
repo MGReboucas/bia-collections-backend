@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # kept for backward compatibility
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
     MASTER_ADMIN_EMAIL: str = "reboucas444@gmail.com"
+    ADMIN_ORDER_NOTIFICATION_EMAIL: str = ""
 
     # CORS — lista de origens permitidas (separadas por vírgula no .env)
     # Ex: ALLOWED_ORIGINS=http://localhost:3000,https://meusite.com
@@ -79,9 +80,21 @@ class Settings(BaseSettings):
             raise ValueError("MASTER_ADMIN_EMAIL inválido.")
         return v
 
+    @field_validator("ADMIN_ORDER_NOTIFICATION_EMAIL")
+    @classmethod
+    def admin_order_notification_email_valido(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v and ("@" not in v or len(v) > 255):
+            raise ValueError("ADMIN_ORDER_NOTIFICATION_EMAIL invalido.")
+        return v
+
     @property
     def email_from_address(self) -> str:
         return self.SMTP_FROM or self.EMAIL_FROM or self.SMTP_USER
+
+    @property
+    def admin_order_notification_email(self) -> str:
+        return self.ADMIN_ORDER_NOTIFICATION_EMAIL or self.MASTER_ADMIN_EMAIL
 
     model_config = {"env_file": ".env"}
 

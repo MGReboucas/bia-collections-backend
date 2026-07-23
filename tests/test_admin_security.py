@@ -2675,8 +2675,9 @@ def test_pedido_criado_usa_template_admin_e_registra_log_renderizado(client, mon
     assert payload["pedido_total"] == "R$ 110,00"
 
 
-def test_pagamento_aprovado_cartao_e_webhook_registram_logs_admin(client, monkeypatch):
+def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
+    sent, _ = patch_service_email_provider(monkeypatch)
     card_order_id, _ = create_order_record(
         username="cliente-email-card",
         email="cliente-email-card@example.com",
@@ -2730,6 +2731,8 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_admin(client, monkey
 
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
     monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module.settings, "ADMIN_ORDER_NOTIFICATION_EMAIL", "dona@example.com")
+    monkeypatch.setattr(pagamentos_module.settings, "FRONTEND_URL", "https://loja.example.test")
     monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
 
     card_response = client.post(
@@ -2755,11 +2758,15 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_admin(client, monkey
     assert card_response.status_code == 200
     assert webhook_response.status_code == 200
     logs = email_logs()
-    assert len(logs) == 2
-    assert {log.order_id for log in logs} == {card_order_id, webhook_order_id}
+    assert len(logs) == 4
+    customer_logs = [log for log in logs if log.event_key == "pagamento_aprovado"]
+    admin_logs = [log for log in logs if log.event_key == "admin_order_paid"]
+    assert len(customer_logs) == 2
+    assert len(admin_logs) == 2
+    assert {log.order_id for log in customer_logs} == {card_order_id, webhook_order_id}
     for log, numero, recipient in [
-        (logs[0], "EMAILPAY1", "cliente-email-card@example.com"),
-        (logs[1], "EMAILPAY2", "cliente-email-webhook@example.com"),
+        (customer_logs[0], "EMAILPAY1", "cliente-email-card@example.com"),
+        (customer_logs[1], "EMAILPAY2", "cliente-email-webhook@example.com"),
     ]:
         assert log.template_slug == "admin-default-pagamento-aprovado"
         assert_email_log_snapshot(
@@ -2773,6 +2780,146 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_admin(client, monkey
             payload_values={"pedido_numero": numero},
         )
         assert log.dedupe_key == f"pagamento_aprovado:{numero}"
+    for log, numero, customer_email in [
+        (admin_logs[0], "EMAILPAY1", "cliente-email-card@example.com"),
+        (admin_logs[1], "EMAILPAY2", "cliente-email-webhook@example.com"),
+    ]:
+        assert log.template_slug == "admin-order-paid"
+        payload = assert_email_log_snapshot(
+            log,
+            event_key="admin_order_paid",
+            recipient="dona@example.com",
+            status_log="enviado",
+            subject_contains=f"Novo pedido pago #{numero}",
+            html_contains="Novo pedido pago",
+            text_contains=numero,
+            payload_values={"pedido_numero": numero, "customer_email": customer_email},
+        )
+        assert log.dedupe_key == f"admin_order_paid:{numero}"
+        assert payload["link_pedido_admin"] == f"https://loja.example.test/admin/pedidos/{numero}"
+    assert [item["to"] for item in sent] == ["dona@example.com", "dona@example.com"]
+
+
+def test_webhook_aprovado_repetido_nao_duplica_email_admin(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    sent, _ = patch_service_email_provider(monkeypatch)
+    create_order_record(
+        username="cliente-email-webhook-dup",
+        email="cliente-email-webhook-dup@example.com",
+        numero="EMAILDUP1",
+        forma_pagamento="cartao",
+        total=75.0,
+    )
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    class FakePaymentResource:
+        def get(self, payment_id):
+            assert payment_id == "pay_webhook_dup"
+            return {
+                "status": 200,
+                "response": {
+                    "id": "pay_webhook_dup",
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "external_reference": "EMAILDUP1",
+                    "transaction_amount": 75.0,
+                    "payment_method_id": "visa",
+                    "metadata": {"pedido_numero": "EMAILDUP1", "payment_flow": "cartao"},
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, access_token):
+            assert access_token == "token"
+
+        def payment(self):
+            return FakePaymentResource()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module.settings, "ADMIN_ORDER_NOTIFICATION_EMAIL", "dona@example.com")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+
+    first = client.post(
+        "/api/v1/pagamentos/webhook",
+        json={"type": "payment", "data": {"id": "pay_webhook_dup"}},
+    )
+    second = client.post(
+        "/api/v1/pagamentos/webhook",
+        json={"type": "payment", "data": {"id": "pay_webhook_dup"}},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    logs = email_logs()
+    customer_logs = [log for log in logs if log.event_key == "pagamento_aprovado"]
+    admin_logs = [log for log in logs if log.event_key == "admin_order_paid"]
+    assert len(customer_logs) == 1
+    assert len(admin_logs) == 1
+    assert admin_logs[0].dedupe_key == "admin_order_paid:EMAILDUP1"
+    assert sent[0]["to"] == "dona@example.com"
+    assert len(sent) == 1
+
+
+def test_pagamento_aprovado_sem_email_admin_configurado_usa_master_admin(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    sent, _ = patch_service_email_provider(monkeypatch)
+    create_order_record(
+        username="cliente-email-admin-fallback",
+        email="cliente-email-admin-fallback@example.com",
+        numero="EMAILFALL1",
+        forma_pagamento="cartao",
+        total=88.0,
+    )
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    class FakeCardPayment:
+        def create(self, payload, options=None):
+            return {
+                "status": 201,
+                "response": {
+                    "id": "pay_card_fallback",
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "payment_method_id": payload["payment_method_id"],
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, access_token):
+            assert access_token == "token"
+
+        def payment(self):
+            return FakeCardPayment()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.settings, "ADMIN_ORDER_NOTIFICATION_EMAIL", "")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+
+    response = client.post(
+        "/api/v1/pagamentos/cartao/EMAILFALL1",
+        json={
+            "token": "tok_card",
+            "payment_method_id": "visa",
+            "issuer_id": "123",
+            "installments": 1,
+            "transaction_amount": 88.0,
+            "payer": {
+                "email": "pagador@example.com",
+                "identification": {"type": "CPF", "number": "12345678909"},
+            },
+        },
+        headers=auth_headers("cliente-email-admin-fallback"),
+    )
+
+    assert response.status_code == 200
+    admin_logs = [log for log in email_logs() if log.event_key == "admin_order_paid"]
+    assert len(admin_logs) == 1
+    assert admin_logs[0].email == MASTER_ADMIN_EMAIL
+    assert admin_logs[0].status == "enviado"
+    assert sent[0]["to"] == MASTER_ADMIN_EMAIL
 
 
 def test_pedido_enviado_por_status_e_rastreio_sem_duplicar(client, monkeypatch):

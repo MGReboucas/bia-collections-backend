@@ -17,7 +17,7 @@ from app.models.cupom import Cupom, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
-from app.modules.email.service import trigger_order_email_event
+from app.modules.email.service import trigger_admin_order_paid_email, trigger_order_email_event
 from app.schemas.pedido import PagamentoCartaoRequest, PagamentoCartaoResponse
 from app.services.cupom_service import reservar_uso_cupom
 from app.services.payment_status import (
@@ -453,6 +453,18 @@ def _registrar_cupom_pagamento_aprovado(db: Session, pedido: Pedido) -> None:
     )
 
 
+def _trigger_payment_email_event(
+    db: Session,
+    event_key: str,
+    pedido: Pedido,
+    *,
+    pagamento: Pagamento | None = None,
+) -> None:
+    trigger_order_email_event(db, event_key, pedido)
+    if event_key == "payment_approved":
+        trigger_admin_order_paid_email(db, pedido, pagamento=pagamento)
+
+
 def _atualizar_pagamento_local(
     db: Session,
     response: dict,
@@ -652,7 +664,7 @@ def criar_pagamento_pix(
     event_key = PAYMENT_EMAIL_EVENTS.get(pix_data["status"])
     if event_key:
         db.refresh(pedido)
-        trigger_order_email_event(db, event_key, pedido)
+        _trigger_payment_email_event(db, event_key, pedido, pagamento=pagamento)
 
     return {
         "qr_code": qr_code,
@@ -734,7 +746,7 @@ def criar_pagamento_cartao(
     event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
     if event_key:
         db.refresh(pedido)
-        trigger_order_email_event(db, event_key, pedido)
+        _trigger_payment_email_event(db, event_key, pedido, pagamento=pagamento)
 
     return PagamentoCartaoResponse(
         payment_id=payment_id,
@@ -872,7 +884,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         if result.get("status") not in (200, 201):
             raise HTTPException(status_code=502, detail="Erro ao consultar pagamento.")
 
-    pedido, _, mp_status = _atualizar_pagamento_local(db, response, payment_id)
+    pedido, pagamento, mp_status = _atualizar_pagamento_local(db, response, payment_id)
     if not mp_status:
         return {"status": "ignored"}
 
@@ -880,7 +892,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
     if pedido and event_key:
         db.refresh(pedido)
-        trigger_order_email_event(db, event_key, pedido)
+        _trigger_payment_email_event(db, event_key, pedido, pagamento=pagamento)
     return {"status": "ok"}
 
 
@@ -910,7 +922,7 @@ def status_pagamento(
         logger.exception("Erro ao sincronizar PIX pendente do pedido %s", numero_pedido)
     db.refresh(pedido)
     if old_status not in ORDER_STATUSES_PAGOS and pedido.status in ORDER_STATUSES_PAGOS:
-        trigger_order_email_event(db, "payment_approved", pedido)
+        _trigger_payment_email_event(db, "payment_approved", pedido, pagamento=pagamento)
     return {
         "numero_pedido": numero_pedido,
         "status_pedido": pedido.status,

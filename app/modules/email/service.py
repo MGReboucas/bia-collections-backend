@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.models.cupom import Cupom
+from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.usuario import Usuario
 from app.modules.email.models import EmailAutomation, EmailLog, EmailTemplate
 from app.modules.email.provider import EmailProvider
-from app.modules.email.templates import ensure_brand_logo_html
+from app.modules.email.templates import brand_email_html, ensure_brand_logo_html
 
 try:
     from jinja2 import BaseLoader, Environment
@@ -39,6 +40,8 @@ ERROR_STATUSES = {EMAIL_STATUS_ERROR, *LEGACY_ERROR_STATUSES}
 RETRYABLE_STATUSES = PENDING_STATUSES | ERROR_STATUSES
 DEDUPE_STATUSES = PENDING_STATUSES | SENT_STATUSES | ERROR_STATUSES
 MAX_ATTEMPTS = 3
+ADMIN_ORDER_PAID_EVENT_KEY = "admin_order_paid"
+ADMIN_ORDER_PAID_TEMPLATE_SLUG = "admin-order-paid"
 _VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.]+)\s*}}")
 ADMIN_EVENT_TO_AUTOMATION_EVENT = {
     "pedido_criado": "order_created",
@@ -190,6 +193,67 @@ class EmailAutomationService:
                 subject=rendered.subject,
                 html=rendered.html,
                 text=rendered.text,
+            )
+            log.status = EMAIL_STATUS_SENT
+            log.provider = getattr(result, "provider", None) or "mock"
+            log.provider_message_id = getattr(result, "provider_message_id", None)
+            log.sent_at = datetime.now(timezone.utc)
+            log.attempts = 1
+            log.next_attempt_at = None
+            self.db.commit()
+            self.db.refresh(log)
+            return log
+        except Exception as exc:
+            log.status = EMAIL_STATUS_ERROR
+            log.error_message = str(exc)[:2000]
+            log.attempts = 1
+            log.next_attempt_at = None
+            self.db.commit()
+            self.db.refresh(log)
+            if raise_on_failure:
+                raise
+            return log
+
+    def send_transactional_email_now(
+        self,
+        *,
+        to: str,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        template_slug: str,
+        event_key: str,
+        payload: dict[str, Any],
+        raise_on_failure: bool = True,
+    ) -> EmailLog:
+        normalized_to = to.strip().lower()
+        if not normalized_to:
+            raise ValueError("Destinatario de email ausente.")
+
+        duplicate = self._find_duplicate_log(normalized_to, event_key, template_slug, payload)
+        if duplicate:
+            return duplicate
+
+        log = self.save_email_log(
+            user_id=self._safe_int(payload.get("user_id")),
+            order_id=self._safe_int(payload.get("order_id")),
+            email=normalized_to,
+            template_slug=template_slug,
+            event_key=event_key,
+            dedupe_key=self._optional_text(payload.get("dedupe_key")),
+            status=EMAIL_STATUS_PENDING,
+            subject=subject,
+            html_snapshot=ensure_brand_logo_html(html_content) or "",
+            text_snapshot=text_content,
+            payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+            next_attempt_at=datetime.now(timezone.utc),
+        )
+        try:
+            result = self.provider.send(
+                to=normalized_to,
+                subject=subject,
+                html=log.html_snapshot,
+                text=text_content,
             )
             log.status = EMAIL_STATUS_SENT
             log.provider = getattr(result, "provider", None) or "mock"
@@ -578,6 +642,180 @@ def build_order_email_payload(
     if extra:
         payload.update(extra)
     return payload
+
+
+def _latest_order_payment(db: Session, pedido: Pedido) -> Pagamento | None:
+    return (
+        db.query(Pagamento)
+        .filter(Pagamento.pedido_numero == pedido.numero)
+        .order_by(Pagamento.id.desc())
+        .first()
+    )
+
+
+def _admin_order_url(pedido: Pedido) -> str:
+    base_url = (settings.FRONTEND_URL or settings.STORE_URL or "").strip().rstrip("/")
+    path = f"/admin/pedidos/{pedido.numero}"
+    return f"{base_url}{path}" if base_url else path
+
+
+def _payment_status_label(pedido: Pedido, pagamento: Pagamento | None) -> str:
+    values: list[str] = []
+    for value in (
+        pagamento.status if pagamento else None,
+        pagamento.mp_status if pagamento else None,
+        pedido.status,
+    ):
+        text = str(value or "").strip()
+        if text and text not in values:
+            values.append(text)
+    return " / ".join(values) or "Pagamento aprovado"
+
+
+def _payment_method_label(pedido: Pedido, pagamento: Pagamento | None) -> str:
+    return str((pagamento.tipo if pagamento else None) or pedido.forma_pagamento or "").strip() or "nao informado"
+
+
+def build_admin_order_paid_email_payload(
+    db: Session,
+    pedido: Pedido,
+    *,
+    pagamento: Pagamento | None = None,
+) -> dict[str, Any]:
+    payload = build_order_email_payload(db, pedido, event_key=ADMIN_ORDER_PAID_EVENT_KEY)
+    pagamento = pagamento or _latest_order_payment(db, pedido)
+    admin_order_url = _admin_order_url(pedido)
+    admin_email = settings.admin_order_notification_email.strip().lower()
+    customer_email = str(payload.get("email") or payload.get("to") or "").strip().lower()
+    payload.update(
+        {
+            "to": admin_email,
+            "email": admin_email,
+            "customer_email": customer_email,
+            "cliente_email": customer_email,
+            "admin_order_url": admin_order_url,
+            "link_pedido_admin": admin_order_url,
+            "payment_method": _payment_method_label(pedido, pagamento),
+            "forma_pagamento": _payment_method_label(pedido, pagamento),
+            "payment_status": _payment_status_label(pedido, pagamento),
+            "status_pagamento": _payment_status_label(pedido, pagamento),
+            "mp_payment_id": pagamento.mp_payment_id if pagamento else "",
+            "dedupe_key": f"{ADMIN_ORDER_PAID_EVENT_KEY}:{pedido.numero}",
+        }
+    )
+    return payload
+
+
+def _admin_order_paid_email_content(payload: dict[str, Any]) -> tuple[str, str, str]:
+    pedido_numero = str(payload.get("pedido_numero") or payload.get("order_number") or "")
+    subject = f"Novo pedido pago #{pedido_numero}"
+    rows = [
+        ("Pedido", pedido_numero),
+        ("Cliente", f"{payload.get('cliente_nome') or payload.get('customer_name')} ({payload.get('customer_email')})"),
+        ("Total", str(payload.get("pedido_total") or payload.get("order_total") or "")),
+        ("Forma de pagamento", str(payload.get("forma_pagamento") or payload.get("payment_method") or "")),
+        ("Status do pagamento", str(payload.get("status_pagamento") or payload.get("payment_status") or "")),
+        ("Pagamento Mercado Pago", str(payload.get("mp_payment_id") or "nao informado")),
+        ("Painel admin", str(payload.get("link_pedido_admin") or payload.get("admin_order_url") or "")),
+    ]
+    body_html = (
+        '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" '
+        'style="border-collapse: collapse; margin: 0 0 18px;">'
+        + "".join(
+            "<tr>"
+            f'<td style="padding: 8px 0; color: #6f675f; font-size: 13px;">{html.escape(label)}</td>'
+            f'<td style="padding: 8px 0; color: #111111; font-size: 14px; text-align: right;">{html.escape(value)}</td>'
+            "</tr>"
+            for label, value in rows
+        )
+        + "</table>"
+    )
+    admin_order_url = str(payload.get("admin_order_url") or "")
+    html_content = brand_email_html(
+        title="Novo pedido pago",
+        preheader=f"Pedido {pedido_numero} confirmado pelo Mercado Pago.",
+        intro=f"O pedido {pedido_numero} teve pagamento confirmado.",
+        body_html=body_html,
+        cta_label="Abrir pedido" if admin_order_url.startswith(("http://", "https://")) else None,
+        cta_url=admin_order_url if admin_order_url.startswith(("http://", "https://")) else None,
+        footer_note="Mensagem interna da loja Bia Collections.",
+    )
+    text_content = "\n".join(
+        [
+            f"Novo pedido pago #{pedido_numero}",
+            f"Cliente: {payload.get('cliente_nome') or payload.get('customer_name')} ({payload.get('customer_email')})",
+            f"Total: {payload.get('pedido_total') or payload.get('order_total')}",
+            f"Forma de pagamento: {payload.get('forma_pagamento') or payload.get('payment_method')}",
+            f"Status do pagamento: {payload.get('status_pagamento') or payload.get('payment_status')}",
+            f"Pagamento Mercado Pago: {payload.get('mp_payment_id') or 'nao informado'}",
+            f"Abrir no painel admin: {admin_order_url}",
+        ]
+    )
+    return subject, html_content, text_content
+
+
+def trigger_admin_order_paid_email(
+    db: Session,
+    pedido: Pedido,
+    *,
+    pagamento: Pagamento | None = None,
+) -> None:
+    try:
+        payload = build_admin_order_paid_email_payload(db, pedido, pagamento=pagamento)
+        admin_email = str(payload.get("to") or "").strip().lower()
+        if not admin_email:
+            logger.warning(
+                "Notificacao admin de pedido pago ignorada: destinatario ausente pedido=%s",
+                pedido.numero,
+            )
+            return
+
+        service = EmailAutomationService(db)
+        duplicate = service._find_duplicate_log(
+            admin_email,
+            ADMIN_ORDER_PAID_EVENT_KEY,
+            ADMIN_ORDER_PAID_TEMPLATE_SLUG,
+            payload,
+        )
+        if duplicate:
+            logger.info(
+                "Notificacao admin de pedido pago ja registrada pedido=%s email=%s log_id=%s status=%s",
+                pedido.numero,
+                admin_email,
+                duplicate.id,
+                duplicate.status,
+            )
+            return
+
+        subject, html_content, text_content = _admin_order_paid_email_content(payload)
+        log = service.send_transactional_email_now(
+            to=admin_email,
+            subject=subject,
+            html_content=html_content,
+            text_content=text_content,
+            template_slug=ADMIN_ORDER_PAID_TEMPLATE_SLUG,
+            event_key=ADMIN_ORDER_PAID_EVENT_KEY,
+            payload=payload,
+            raise_on_failure=False,
+        )
+        if log.status == EMAIL_STATUS_SENT:
+            logger.info(
+                "Notificacao admin de pedido pago enviada pedido=%s email=%s log_id=%s",
+                pedido.numero,
+                admin_email,
+                log.id,
+            )
+        else:
+            logger.warning(
+                "Falha ao enviar notificacao admin de pedido pago pedido=%s email=%s log_id=%s status=%s erro=%s",
+                pedido.numero,
+                admin_email,
+                log.id,
+                log.status,
+                log.error_message,
+            )
+    except Exception:
+        logger.exception("Falha ao disparar notificacao admin de pedido pago pedido=%s", pedido.numero)
 
 
 def build_coupon_email_payload(

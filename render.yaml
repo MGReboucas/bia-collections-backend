@@ -17,6 +17,8 @@ services:
         value: auto
       - key: EMAIL_FROM_NAME
         value: Bia Collections
+      - key: ADMIN_ORDER_NOTIFICATION_EMAIL
+        sync: false
       - key: EMAIL_LOGO_URL
         sync: false
       - key: STORE_NAME
