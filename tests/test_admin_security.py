@@ -2717,6 +2717,7 @@ def test_pedido_criado_usa_template_admin_e_registra_log_renderizado(client, mon
     assert log.dedupe_key == f"pedido_criado:{numero}"
     assert payload["pedido_total"] == "R$ 110,00"
     assert payload["link_meus_pedidos"] == "http://localhost:3000/meus-pedidos"
+    assert "pedido_itens_html|default" not in log.html_snapshot
     assert "Resumo do pedido" in log.html_snapshot
     assert "Vestido Email" in log.html_snapshot
     assert "Quantidade: <strong>2</strong>" in log.html_snapshot
@@ -3422,6 +3423,8 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
     assert "pedido_itens_html" in by_event["pedido_criado"]["html"]
+    assert "pedido_itens_html|default" not in by_event["pedido_criado"]["html"]
+    assert "|safe" not in by_event["pedido_criado"]["html"]
     assert "Ver meus pedidos" in by_event["pedido_criado"]["html"]
     assert "Ver Instagram" in by_event["pedido_criado"]["html"]
     assert "{{produto_nome}}" in by_event["produto_voltou_estoque"]["assunto"]

@@ -22,9 +22,11 @@ from app.modules.email.templates import BRAND_INSTAGRAM_URL, brand_email_html, e
 
 try:
     from jinja2 import BaseLoader, Environment
+    from markupsafe import Markup
 except Exception:  # pragma: no cover - optional dependency fallback
     BaseLoader = None
     Environment = None
+    Markup = None
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,7 @@ _VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.]+)\s*}}")
 _SAFE_VAR_PATTERN = re.compile(
     r"{{\s*([a-zA-Z0-9_.]+)(?:\s*\|\s*default\([^{}]*\))?\s*\|\s*safe\s*}}"
 )
+SAFE_HTML_TEMPLATE_VARIABLES = {"order_items_html", "pedido_itens_html"}
 ADMIN_EVENT_TO_AUTOMATION_EVENT = {
     "boas_vindas": "user_registered",
     "pedido_criado": "order_created",
@@ -587,15 +590,24 @@ class EmailAutomationService:
     def _render_string(self, template: str, payload: dict[str, Any], *, html_escape: bool) -> str:
         if Environment is not None and BaseLoader is not None:
             env = Environment(loader=BaseLoader(), autoescape=html_escape)
-            return env.from_string(template).render(**payload)
+            render_payload = payload
+            if html_escape and Markup is not None:
+                render_payload = dict(payload)
+                for key in SAFE_HTML_TEMPLATE_VARIABLES:
+                    if render_payload.get(key) is not None:
+                        render_payload[key] = Markup(str(render_payload[key]))
+            return env.from_string(template).render(**render_payload)
 
         def replace_safe(match: re.Match[str]) -> str:
             value = self._resolve_payload_value(payload, match.group(1))
             return "" if value is None else str(value)
 
         def replace(match: re.Match[str]) -> str:
-            value = self._resolve_payload_value(payload, match.group(1))
+            key = match.group(1)
+            value = self._resolve_payload_value(payload, key)
             rendered = "" if value is None else str(value)
+            if html_escape and key in SAFE_HTML_TEMPLATE_VARIABLES:
+                return rendered
             return html.escape(rendered) if html_escape else rendered
 
         if html_escape:

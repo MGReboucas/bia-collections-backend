@@ -128,6 +128,10 @@ ORDER_CREATED_TEMPLATE_CURRENT_MARKERS = (
     "link_meus_pedidos",
     "orders_url",
 )
+ORDER_CREATED_TEMPLATE_PREVIEW_INCOMPATIBLE_MARKERS = (
+    "|safe",
+    "|default('', true)",
+)
 
 
 def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
@@ -172,7 +176,9 @@ def _refresh_order_created_template_if_old(template: EmailTemplate, data: dict[s
             "variables_schema",
         )
     )
-    if any(marker in content for marker in ORDER_CREATED_TEMPLATE_CURRENT_MARKERS):
+    if any(marker in content for marker in ORDER_CREATED_TEMPLATE_CURRENT_MARKERS) and not any(
+        marker in content for marker in ORDER_CREATED_TEMPLATE_PREVIEW_INCOMPATIBLE_MARKERS
+    ):
         return
     if not any(marker in content for marker in ORDER_CREATED_TEMPLATE_REFRESH_MARKERS):
         return
@@ -270,7 +276,7 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         body_html=(
             "<p style=\"margin: 0 0 16px; text-align: center;\">"
             "Obrigada pela compra. Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>"
-            "{{ order_items_html|default('', true)|safe }}"
+            "{{order_items_html}}"
             "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
             "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
             "<tr>"
@@ -542,7 +548,7 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         body_html=(
             "<p style=\"margin: 0 0 16px; text-align: center;\">"
             "Obrigada pela compra. Assim que o pagamento for confirmado, vamos preparar tudo com cuidado.</p>"
-            "{{ pedido_itens_html|default('', true)|safe }}"
+            "{{pedido_itens_html}}"
             "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
             "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
             "<tr>"
