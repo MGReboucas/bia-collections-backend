@@ -211,9 +211,9 @@ def _buscar_order_mp_por_referencia(external_reference: str, criado_em: datetime
         body = {}
     if response.status_code not in (200, 201):
         logger.warning(
-            "Mercado Pago recusou busca de order: status=%s response=%s",
+            "Mercado Pago recusou busca de order: status=%s message=%s",
             response.status_code,
-            body,
+            _mensagem_erro_mp(body),
         )
         return None
     data = body.get("data") or body.get("results") or []
@@ -326,6 +326,8 @@ def _extrair_notification_type(request: Request, data: dict) -> str | None:
 
 def _validar_assinatura_webhook(request: Request, data: dict, payment_id: str) -> None:
     if not settings.MP_WEBHOOK_SECRET:
+        if settings.require_mp_webhook_secret:
+            raise HTTPException(status_code=503, detail="Webhook secret nao configurado.")
         return
 
     x_signature = request.headers.get("x-signature")
@@ -471,23 +473,27 @@ def _atualizar_pagamento_local(
     payment_id: str = "",
     pagamento: Pagamento | None = None,
     pedido: Pedido | None = None,
-) -> tuple[Pedido | None, Pagamento | None, str | None]:
+) -> tuple[Pedido | None, Pagamento | None, str | None, bool]:
     payment_id = str(payment_id or response.get("payment_id") or response.get("id") or "")
     pagamento = pagamento or _buscar_pagamento_existente(db, response, payment_id)
     external_ref = _external_reference_pagamento(response, pagamento)
     if not external_ref:
-        return None, pagamento, None
+        return None, pagamento, None, False
 
     mp_status = str(response.get("status") or response.get("mp_status") or "")
     novo_status_pedido = MP_TO_ORDER_STATUS.get(mp_status)
     novo_status_pagamento = MP_TO_PAYMENT_STATUS.get(mp_status, mp_status or "pendente")
     tipo = _tipo_pagamento_mp(response)
     order_id = str(response.get("order_id") or "")
+    changed = False
 
     pedido = pedido or db.query(Pedido).filter(Pedido.numero == external_ref).first()
     if pedido and novo_status_pedido:
+        status_anterior = pedido.status
         if not (pedido.status in ORDER_STATUSES_PAGOS and novo_status_pedido != ORDER_STATUS_PAGO):
             pedido.status = novo_status_pedido
+        if pedido.status != status_anterior:
+            changed = True
         if novo_status_pedido == ORDER_STATUS_PAGO:
             _registrar_cupom_pagamento_aprovado(db, pedido)
 
@@ -499,6 +505,7 @@ def _atualizar_pagamento_local(
             .first()
         )
     if not pagamento:
+        changed = True
         pagamento = Pagamento(
             pedido_numero=external_ref,
             tipo=tipo,
@@ -506,13 +513,16 @@ def _atualizar_pagamento_local(
         db.add(pagamento)
 
     if payment_id:
+        changed = changed or pagamento.mp_payment_id != payment_id
         pagamento.mp_payment_id = payment_id
     if order_id:
+        changed = changed or pagamento.mp_order_id != order_id
         pagamento.mp_order_id = order_id
+    changed = changed or pagamento.status != novo_status_pagamento or pagamento.mp_status != mp_status
     pagamento.status = novo_status_pagamento
     pagamento.mp_status = mp_status
     pagamento.valor = float(response.get("transaction_amount") or pagamento.valor or 0.0)
-    return pedido, pagamento, mp_status
+    return pedido, pagamento, mp_status, changed
 
 
 def _sincronizar_pix_pendente(db: Session, pedido: Pedido, pagamento: Pagamento | None) -> Pagamento | None:
@@ -540,7 +550,7 @@ def _sincronizar_pix_pendente(db: Session, pedido: Pedido, pagamento: Pagamento 
 
     response = _extrair_payment_from_order(order_response)
     response["external_reference"] = response.get("external_reference") or pedido.numero
-    _, pagamento_atualizado, _ = _atualizar_pagamento_local(
+    _, pagamento_atualizado, _, _ = _atualizar_pagamento_local(
         db,
         response,
         response.get("payment_id") or "",
@@ -884,13 +894,13 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         if result.get("status") not in (200, 201):
             raise HTTPException(status_code=502, detail="Erro ao consultar pagamento.")
 
-    pedido, pagamento, mp_status = _atualizar_pagamento_local(db, response, payment_id)
+    pedido, pagamento, mp_status, changed = _atualizar_pagamento_local(db, response, payment_id)
     if not mp_status:
         return {"status": "ignored"}
 
     db.commit()
     event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
-    if pedido and event_key:
+    if changed and pedido and event_key:
         db.refresh(pedido)
         _trigger_payment_email_event(db, event_key, pedido, pagamento=pagamento)
     return {"status": "ok"}

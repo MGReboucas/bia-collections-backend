@@ -61,8 +61,8 @@ def get_current_user(
 ):
     from app.models.usuario import Usuario
 
-    # Prefer Authorization header; fall back to httpOnly cookie
-    actual_token = token or request.cookies.get("cb_token")
+    # Prefer Authorization header; fall back to the httpOnly session cookie.
+    actual_token = token or request.cookies.get(settings.SESSION_COOKIE_NAME)
 
     exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -103,6 +103,15 @@ def get_current_master_admin_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acesso restrito ao administrador mestre.",
+        )
+
+    if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+        logger.info(
+            "Acao admin autorizada: user_id=%s email=%s metodo=%s rota=%s",
+            getattr(current_user, "id", None),
+            getattr(current_user, "email", None),
+            request.method.upper(),
+            route,
         )
 
     return current_user

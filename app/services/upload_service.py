@@ -21,6 +21,11 @@ EXT_TO_MIME = {
     "png": "image/png",
     "webp": "image/webp",
 }
+MIME_TO_EXT = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 MAX_SIZE = 5 * 1024 * 1024  # 5 MB
 
 _cloudinary_configured = bool(
@@ -49,6 +54,26 @@ def _infer_content_type(file: UploadFile) -> str:
     return content_type
 
 
+def detect_image_mime(contents: bytes) -> str | None:
+    if contents.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if contents.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(contents) >= 12 and contents[:4] == b"RIFF" and contents[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def validate_image_bytes(contents: bytes) -> str:
+    detected_type = detect_image_mime(contents)
+    if detected_type not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail="Arquivo invalido. Envie uma imagem JPEG, PNG ou WebP real.",
+        )
+    return detected_type
+
+
 async def upload_image(file: UploadFile, folder: str = "bia-collections") -> str:
     """
     Valida e faz upload de uma imagem.
@@ -57,8 +82,8 @@ async def upload_image(file: UploadFile, folder: str = "bia-collections") -> str
     - Cloudinary configurado → URL permanente na nuvem
     - Sem Cloudinary → salva localmente e retorna caminho relativo /uploads/<file>
     """
-    content_type = _infer_content_type(file)
-    if content_type not in ALLOWED_TYPES:
+    claimed_content_type = _infer_content_type(file)
+    if claimed_content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=415,
             detail="Formato inválido. Use JPEG, PNG ou WebP.",
@@ -71,10 +96,12 @@ async def upload_image(file: UploadFile, folder: str = "bia-collections") -> str
             detail="Imagem muito grande. Máximo 5 MB.",
         )
 
+    content_type = validate_image_bytes(contents)
+
     if _cloudinary_configured:
         return _upload_cloudinary(contents, folder)
     else:
-        return _save_local(contents, file.filename or "upload.jpg", folder)
+        return _save_local(contents, file.filename or "upload.jpg", folder, content_type)
 
 
 def _upload_cloudinary(contents: bytes, folder: str) -> str:
@@ -99,8 +126,10 @@ def _safe_folder_parts(folder: str) -> list[str]:
     return parts
 
 
-def _save_local(contents: bytes, original_filename: str, folder: str) -> str:
-    ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else "jpg"
+def _save_local(contents: bytes, original_filename: str, folder: str, content_type: str) -> str:
+    ext = MIME_TO_EXT.get(content_type)
+    if not ext:
+        ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else "jpg"
     filename = f"{uuid.uuid4().hex[:12]}.{ext}"
     folder_parts = _safe_folder_parts(folder)
     upload_dir = Path("uploads", *folder_parts)
@@ -144,7 +173,12 @@ def delete_old_image(url: str | None) -> None:
     if not url:
         return
     if url.startswith("/uploads/"):
-        path = url.lstrip("/")
+        uploads_root = Path("uploads").resolve()
+        path = Path(url.lstrip("/")).resolve()
+        try:
+            path.relative_to(uploads_root)
+        except ValueError:
+            return
         if os.path.exists(path):
             try:
                 os.remove(path)

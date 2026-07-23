@@ -20,6 +20,7 @@ from app.services.upload_service import (
     MAX_SIZE,
     delete_old_image,
     upload_image,
+    validate_image_bytes,
 )
 from app.models.avaliacao import Avaliacao
 from app.models.banner import Banner
@@ -391,6 +392,13 @@ async def _validate_product_images(files: List[UploadFile]) -> None:
                 status_code=422,
                 detail=f"Imagem {index}: tamanho maximo permitido e 5 MB.",
             )
+        try:
+            validate_image_bytes(contents)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Imagem {index}: {exc.detail}",
+            ) from exc
         await file.seek(0)
 
 

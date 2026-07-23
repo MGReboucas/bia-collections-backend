@@ -35,9 +35,14 @@ from app.services.two_factor_service import hash_two_factor_token
 from main import app
 
 PASSWORD = "senha-segura-123"
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+JPG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+WEBP_BYTES = b"RIFF" + b"\x20\x00\x00\x00" + b"WEBP" + b"\x00" * 32
 auth_router_module = importlib.import_module("app.routers.auth")
 admin_module = importlib.import_module("app.routers.admin")
 email_module = importlib.import_module("app.core.email")
+pagamentos_module = importlib.import_module("app.routers.pagamentos")
+rate_limit_module = importlib.import_module("app.core.rate_limit")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -215,8 +220,113 @@ def test_codigo_correto_retorna_token_final(client, sent_2fa_codes):
     body = response.json()
     assert body["access_token"]
     assert body["token_type"] == "bearer"
+    assert body["csrf_token"]
     assert body["usuario"]["email"] == "cliente-token@example.com"
     assert body["usuario"]["foto_url"] is None
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "cb_token=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "cb_csrf=" in set_cookie
+
+
+def test_cookie_auth_exige_csrf_em_metodo_mutavel(client, sent_2fa_codes):
+    create_user("cliente-csrf", "cliente-csrf@example.com")
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"login": "cliente-csrf", "senha": PASSWORD},
+    )
+    verified = client.post(
+        "/api/v1/auth/login/verificar-2fa",
+        json={
+            "two_factor_token": login.json()["two_factor_token"],
+            "codigo": sent_2fa_codes[-1]["codigo"],
+        },
+    )
+    assert verified.status_code == 200
+
+    blocked = client.put(
+        "/api/v1/usuario/perfil",
+        json={"nome_completo": "Cliente Sem CSRF"},
+    )
+    assert blocked.status_code == 403
+
+    csrf_token = client.cookies.get("cb_csrf")
+    allowed = client.put(
+        "/api/v1/usuario/perfil",
+        json={"nome_completo": "Cliente Com CSRF"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["nome_completo"] == "Cliente Com CSRF"
+
+
+def test_logout_limpa_cookies_de_auth(client, sent_2fa_codes):
+    create_user("cliente-logout", "cliente-logout@example.com")
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"login": "cliente-logout", "senha": PASSWORD},
+    )
+    verified = client.post(
+        "/api/v1/auth/login/verificar-2fa",
+        json={
+            "two_factor_token": login.json()["two_factor_token"],
+            "codigo": sent_2fa_codes[-1]["codigo"],
+        },
+    )
+    assert verified.status_code == 200
+    assert client.cookies.get("cb_token")
+
+    response = client.post(
+        "/api/v1/auth/logout",
+        headers={"X-CSRF-Token": client.cookies.get("cb_csrf")},
+    )
+    assert response.status_code == 200
+    assert client.cookies.get("cb_token") is None
+    assert client.cookies.get("cb_csrf") is None
+
+
+def test_respostas_incluem_headers_de_seguranca(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+
+
+def test_cors_rejeita_origem_nao_autorizada(client):
+    response = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.headers.get("access-control-allow-origin") is None
+
+
+def test_rate_limit_retorna_429_com_retry_after(client, monkeypatch):
+    rate_limit_module.clear_rate_limit_state()
+    monkeypatch.setattr(rate_limit_module.settings, "RATE_LIMIT_ENABLED", True)
+
+    for _ in range(3):
+        ok = client.post(
+            "/api/v1/auth/recuperar-senha",
+            json={"email": "cliente-rate@example.com"},
+        )
+        assert ok.status_code == 200
+
+    blocked = client.post(
+        "/api/v1/auth/recuperar-senha",
+        json={"email": "cliente-rate@example.com"},
+    )
+
+    assert blocked.status_code == 429
+    assert blocked.headers["retry-after"]
+    assert blocked.json()["retry_after_seconds"] >= 1
+    rate_limit_module.clear_rate_limit_state()
 
 
 def test_codigo_errado_nao_loga(client, sent_2fa_codes):
@@ -648,7 +758,7 @@ def test_master_admin_cria_categoria_com_upload_de_imagem(client, monkeypatch):
     response = client.post(
         "/api/v1/admin/categorias",
         data={"nome": "Bolsas"},
-        files={"imagem": ("bolsas.webp", b"fake image", "image/webp")},
+        files={"imagem": ("bolsas.webp", WEBP_BYTES, "image/webp")},
         headers=auth_headers("master"),
     )
 
@@ -738,7 +848,7 @@ def test_master_admin_atualiza_categoria_com_upload_remove_imagem_antiga(client,
     response = client.put(
         f"/api/v1/admin/categorias/{categoria_id}",
         data={"nome": "Vestidos Festa"},
-        files={"imagem": ("vestidos.png", b"fake image", "image/png")},
+        files={"imagem": ("vestidos.png", PNG_BYTES, "image/png")},
         headers=auth_headers("master"),
     )
 
@@ -811,10 +921,10 @@ def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
             "ativo": "true",
         },
         files=[
-            ("imagem", ("legado.webp", b"legacy", "image/webp")),
-            ("imagens", ("capa.webp", b"cover", "image/webp")),
-            ("imagens", ("detalhe.png", b"detail", "image/png")),
-            ("imagens", ("look.jpg", b"look", "image/jpeg")),
+            ("imagem", ("legado.webp", WEBP_BYTES, "image/webp")),
+            ("imagens", ("capa.webp", WEBP_BYTES, "image/webp")),
+            ("imagens", ("detalhe.png", PNG_BYTES, "image/png")),
+            ("imagens", ("look.jpg", JPG_BYTES, "image/jpeg")),
         ],
         headers=auth_headers("master"),
     )
@@ -929,8 +1039,8 @@ def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client
             "ativo": "true",
         },
         files=[
-            ("imagens", ("capa.webp", b"cover", "image/webp")),
-            ("imagens", ("detalhe.png", b"detail", "image/png")),
+            ("imagens", ("capa.webp", WEBP_BYTES, "image/webp")),
+            ("imagens", ("detalhe.png", PNG_BYTES, "image/png")),
         ],
         headers=auth_headers("master"),
     )
@@ -1165,7 +1275,7 @@ def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypat
         "/api/v1/admin/produtos",
         data=data,
         files=[
-            ("imagens", (f"imagem-{index}.webp", b"img", "image/webp"))
+            ("imagens", (f"imagem-{index}.webp", WEBP_BYTES, "image/webp"))
             for index in range(11)
         ],
         headers=headers,
@@ -1181,6 +1291,15 @@ def test_master_admin_valida_limite_tipo_e_tamanho_das_imagens(client, monkeypat
     )
     assert invalid_type.status_code == 422
     assert "formato invalido" in invalid_type.json()["detail"]
+
+    invalid_content = client.post(
+        "/api/v1/admin/produtos",
+        data=data,
+        files={"imagens": ("fake.png", b"not a real image", "image/png")},
+        headers=headers,
+    )
+    assert invalid_content.status_code == 422
+    assert "imagem" in invalid_content.json()["detail"].lower()
 
     oversized = client.post(
         "/api/v1/admin/produtos",
@@ -1237,8 +1356,8 @@ def test_master_admin_atualiza_produto_valida_limite_total_da_galeria(client, mo
             "imagens_manter": json.dumps(image_urls),
         },
         files=[
-            ("imagens", ("nova-1.webp", b"img", "image/webp")),
-            ("imagens", ("nova-2.webp", b"img", "image/webp")),
+            ("imagens", ("nova-1.webp", WEBP_BYTES, "image/webp")),
+            ("imagens", ("nova-2.webp", WEBP_BYTES, "image/webp")),
         ],
         headers=auth_headers("master"),
     )
@@ -2310,6 +2429,19 @@ def test_webhook_pix_order_processed_atualiza_pedido_e_pagamento(client, monkeyp
     finally:
         db.close()
     assert email_events == [("payment_approved", "0000007")]
+
+
+def test_webhook_em_producao_exige_secret_configurado(client, monkeypatch):
+    monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(pagamentos_module.settings, "REQUIRE_MP_WEBHOOK_SECRET", True)
+
+    response = client.post(
+        "/api/v1/pagamentos/webhook",
+        json={"type": "payment", "data": {"id": "pay_without_secret"}},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Webhook secret nao configurado."
 
 
 def test_status_pix_pendente_busca_order_por_referencia_sem_order_id(client, monkeypatch):
@@ -3618,7 +3750,7 @@ def test_fluxo_banners_home_admin_upload_ordem_static_e_auth(client):
     banner_1 = client.post(
         "/api/v1/admin/banners",
         data={"titulo": "Banner Home 1", "link": "/produtos"},
-        files={"imagem": ("banner-1.png", b"fake-png-1", "image/png")},
+        files={"imagem": ("banner-1.png", PNG_BYTES, "image/png")},
         headers=headers,
     )
     assert banner_1.status_code == 201
@@ -3637,7 +3769,7 @@ def test_fluxo_banners_home_admin_upload_ordem_static_e_auth(client):
     banner_2 = client.post(
         "/api/v1/admin/banners",
         data={"titulo": "Banner Home 2", "link": "/produtos"},
-        files={"imagem": ("banner-2.png", b"fake-png-2", "image/png")},
+        files={"imagem": ("banner-2.png", PNG_BYTES, "image/png")},
         headers=headers,
     )
     assert banner_2.status_code == 201

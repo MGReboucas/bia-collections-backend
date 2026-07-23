@@ -5,7 +5,14 @@ from app.models.avaliacao import Avaliacao, AvaliacaoFoto
 from app.models.pedido import ItemPedido, Pedido
 from app.models.produto import Produto
 from app.models.usuario import Usuario
-from app.services.upload_service import ALLOWED_TYPES, EXT_TO_MIME, MAX_SIZE, delete_old_image, upload_image
+from app.services.upload_service import (
+    ALLOWED_TYPES,
+    EXT_TO_MIME,
+    MAX_SIZE,
+    delete_old_image,
+    upload_image,
+    validate_image_bytes,
+)
 
 MAX_AVALIACAO_FOTOS = 4
 AVALIACAO_IMAGE_FOLDER = "avaliacoes"
@@ -63,6 +70,13 @@ async def validate_avaliacao_images(files: list[UploadFile]) -> None:
                 status_code=422,
                 detail=f"Foto {index}: tamanho maximo permitido e 5 MB.",
             )
+        try:
+            validate_image_bytes(contents)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Foto {index}: {exc.detail}",
+            ) from exc
         await file.seek(0)
 
 

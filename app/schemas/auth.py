@@ -96,8 +96,9 @@ class UsuarioBasico(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None
     token_type: str = "bearer"
+    csrf_token: Optional[str] = None
     usuario: UsuarioBasico
 
 

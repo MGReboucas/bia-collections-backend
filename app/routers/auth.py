@@ -4,8 +4,6 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -14,7 +12,8 @@ from app.dependencies import is_master_admin_email
 from app.models.usuario import Usuario
 from app.models.reset_senha import ResetSenha
 from app.core.config import settings
-from app.core.security import verify_password, get_password_hash, create_access_token
+from app.core.auth_cookies import clear_auth_cookies, issue_auth_cookies, set_csrf_cookie
+from app.core.security import verify_password, get_password_hash
 from app.core.email import enviar_email_codigo_acesso, enviar_email_reset
 from app.modules.email.models import EmailTemplate
 from app.modules.email.service import EmailAutomationService
@@ -42,7 +41,6 @@ from app.schemas.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-limiter = Limiter(key_func=get_remote_address)
 logger = logging.getLogger(__name__)
 
 
@@ -76,27 +74,16 @@ def _usuario_basico_response(user: Usuario) -> UsuarioBasico:
     return usuario
 
 
-def _token_response(user: Usuario) -> TokenResponse:
+def _token_response(
+    user: Usuario,
+    *,
+    access_token: str | None = None,
+    csrf_token: str | None = None,
+) -> TokenResponse:
     return TokenResponse(
-        access_token=create_access_token({"sub": user.username}),
+        access_token=access_token if settings.AUTH_RETURN_ACCESS_TOKEN else None,
+        csrf_token=csrf_token,
         usuario=_usuario_basico_response(user),
-    )
-
-
-_COOKIE_NAME = "cb_token"
-_COOKIE_MAX_AGE = 86400  # 1 day in seconds
-
-
-def _set_auth_cookie(response: Response, user: Usuario) -> None:
-    token = create_access_token({"sub": user.username})
-    response.set_cookie(
-        key=_COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        path="/",
-        max_age=_COOKIE_MAX_AGE,
-        secure=False,  # set to True behind HTTPS in production
     )
 
 
@@ -166,7 +153,6 @@ def _resend_too_soon_response(error: TwoFactorResendTooSoonError) -> JSONRespons
 
 
 @router.post("/login", response_model=TwoFactorChallengeResponse)
-@limiter.limit("10/minute")
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     user = (
         db.query(Usuario)
@@ -184,7 +170,6 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/cadastro", response_model=TwoFactorChallengeResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")
 def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_db)):
     if data.senha != data.confirma_senha:
         raise HTTPException(
@@ -221,8 +206,8 @@ def verificar_2fa(data: VerifyTwoFactorRequest, response: Response, db: Session 
     except TwoFactorError as error:
         _raise_two_factor_error(error)
 
-    _set_auth_cookie(response, user)
-    return _token_response(user)
+    access_token, csrf_token = issue_auth_cookies(response, user)
+    return _token_response(user, access_token=access_token, csrf_token=csrf_token)
 
 
 @router.post("/login/reenviar-2fa", response_model=ResendTwoFactorResponse)
@@ -246,7 +231,6 @@ def reenviar_2fa(data: ResendTwoFactorRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/recuperar-senha")
-@limiter.limit("5/minute")
 def recuperar_senha(request: Request, data: RecuperarSenhaRequest, db: Session = Depends(get_db)):  # noqa: ARG001
     return {"mensagem": "Se o e-mail existir, você receberá as instruções."}
 
@@ -254,7 +238,6 @@ def recuperar_senha(request: Request, data: RecuperarSenhaRequest, db: Session =
 # ── Redefinição de senha em 3 etapas ──────────────────────────────────────────────
 
 @router.post("/solicitar-redefinicao")
-@limiter.limit("3/minute")
 def solicitar_redefinicao(request: Request, data: SolicitarRedefinicaoRequest, db: Session = Depends(get_db)):
     """Etapa 1 — gera código de 6 dígitos, armazena hash e envia por e-mail."""
     email = _normalizar_email(data.email)
@@ -400,8 +383,14 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
     return {"mensagem": "Senha redefinida com sucesso."}
 
 
+@router.get("/csrf")
+def csrf_token(response: Response):
+    token = set_csrf_cookie(response)
+    return {"csrf_token": token}
+
+
 @router.post("/logout")
 def logout(response: Response):
-    response.delete_cookie(key=_COOKIE_NAME, path="/", httponly=True, samesite="lax")
+    clear_auth_cookies(response)
     return {"mensagem": "Logout realizado com sucesso."}
 

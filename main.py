@@ -1,14 +1,14 @@
 import os
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 import app.models  # noqa: F401 — registers all models with Base before create_all()
 from app.core.database import Base, engine
 from app.core.config import settings
+from app.core.csrf import csrf_is_valid, should_enforce_csrf
+from app.core.rate_limit import rate_limit_response_if_needed
 from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners, avaliacoes
 from app.routers.admin_emails import router as admin_emails_router
 from app.modules.email.routes import router as email_admin_router
@@ -207,26 +207,72 @@ seed_email_automation()
 
 os.makedirs("uploads", exist_ok=True)
 
-limiter = Limiter(key_func=get_remote_address)
-
-app = FastAPI(title="Bia Collections API", version="1.0.0")
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app = FastAPI(
+    title="Bia Collections API",
+    version="1.0.0",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
+)
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # CORS — when using httpOnly cookies, allow_credentials must be True and
 # ALLOWED_ORIGINS must NOT be ["*"]. Set ALLOWED_ORIGINS in .env for production.
-_origins = settings.ALLOWED_ORIGINS
+_origins = settings.allowed_origins
 _allow_credentials = "*" not in _origins
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_credentials=_allow_credentials,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Cookie"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Cookie",
+        "X-CSRF-Token",
+        "X-Requested-With",
+    ],
 )
+
+
+def _apply_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=()",
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+    )
+    if settings.is_production:
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains; preload",
+        )
+    return response
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    limited_response = rate_limit_response_if_needed(request)
+    if limited_response is not None:
+        return _apply_security_headers(limited_response)
+
+    if should_enforce_csrf(request) and not csrf_is_valid(request):
+        return _apply_security_headers(
+            JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token invalido ou ausente."},
+            )
+        )
+
+    response = await call_next(request)
+    return _apply_security_headers(response)
 
 app.include_router(auth, prefix="/api/v1")
 app.include_router(produtos, prefix="/api/v1")
