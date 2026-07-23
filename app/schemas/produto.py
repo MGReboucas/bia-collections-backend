@@ -37,6 +37,7 @@ class ProdutoListItem(BaseModel):
     preco_formatado: str
     preco_promocional: Optional[float] = None
     estoque: Optional[int] = None
+    ativo: bool
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
     imagens: List[ProdutoImagemOut] = Field(default_factory=list)
@@ -52,6 +53,7 @@ class ProdutoDetalhe(BaseModel):
     preco_formatado: str
     preco_promocional: Optional[float] = None
     estoque: Optional[int] = None
+    ativo: bool
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
     imagens: List[ProdutoImagemOut] = Field(default_factory=list)

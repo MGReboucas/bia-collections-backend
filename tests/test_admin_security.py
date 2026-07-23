@@ -821,6 +821,7 @@ def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
 
     assert response.status_code == 201
     body = response.json()
+    assert body["ativo"] is True
     assert body["imagem_url"] == "/uploads/produtos/capa.webp"
     assert [imagem["imagem_url"] for imagem in body["imagens"]] == [
         "/uploads/produtos/capa.webp",
@@ -837,17 +838,43 @@ def test_master_admin_cria_produto_com_galeria_de_imagens(client, monkeypatch):
 
     produtos_admin = client.get("/api/v1/admin/produtos", headers=auth_headers("master"))
     assert produtos_admin.status_code == 200
+    assert produtos_admin.json()["itens"][0]["ativo"] is True
     assert produtos_admin.json()["itens"][0]["imagens"] == body["imagens"]
 
     produtos_publicos = client.get("/api/v1/produtos")
     assert produtos_publicos.status_code == 200
     item = produtos_publicos.json()["itens"][0]
+    assert item["ativo"] is True
     assert item["imagem_url"] == "/uploads/produtos/capa.webp"
     assert item["imagens"] == body["imagens"]
 
     detalhe = client.get(f"/api/v1/produtos/{body['id']}")
     assert detalhe.status_code == 200
+    assert detalhe.json()["ativo"] is True
     assert detalhe.json()["imagens"] == body["imagens"]
+
+
+def test_admin_produtos_retorna_estado_real_de_visibilidade(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Produto oculto", preco=19.9, ativo=False)
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    produtos_admin = client.get("/api/v1/admin/produtos", headers=auth_headers("master"))
+    assert produtos_admin.status_code == 200
+    item = produtos_admin.json()["itens"][0]
+    assert item["id"] == produto_id
+    assert item["ativo"] is False
+
+    produtos_publicos = client.get("/api/v1/produtos")
+    assert produtos_publicos.status_code == 200
+    assert produtos_publicos.json()["total"] == 0
+    assert produtos_publicos.json()["itens"] == []
 
 
 def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client, monkeypatch):

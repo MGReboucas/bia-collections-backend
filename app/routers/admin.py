@@ -664,6 +664,7 @@ def _produto_response(produto: Produto) -> dict:
         "preco_formatado": formatar_preco(produto.preco),
         "preco_promocional": produto.preco_promocional,
         "estoque": produto.estoque,
+        "ativo": produto.ativo is True,
         "categoria": produto.categoria.nome if produto.categoria else None,
         "imagem_url": _produto_imagem_url(produto, imagens),
         "imagens": imagens,
