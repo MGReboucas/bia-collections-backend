@@ -262,16 +262,25 @@ def _status_pix_local(mp_status: str) -> str:
     return MP_TO_PAYMENT_STATUS.get(mp_status or "pending", "pendente")
 
 
-def _criar_recurso_mp(resource, payload: dict, idempotency_key: str):
-    try:
-        from mercadopago.config import RequestOptions
+def _criar_recurso_mp(
+    resource,
+    payload: dict,
+    idempotency_key: str,
+):
+    request_options = mercadopago.config.RequestOptions()
+    request_options.custom_headers = {
+        "x-idempotency-key": idempotency_key,
+    }
 
-        options = RequestOptions(
-            custom_headers={"x-idempotency-key": idempotency_key}
+    try:
+        return resource.create(payload, request_options)
+    except Exception:
+        logger.exception(
+            "Falha ao criar recurso no Mercado Pago. "
+            "idempotency_key=%s",
+            idempotency_key,
         )
-        return resource.create(payload, options)
-    except (ImportError, AttributeError, TypeError):
-        return resource.create(payload)
+        raise
 
 
 def _parse_x_signature(value: str | None) -> dict[str, str]:
@@ -701,15 +710,12 @@ def criar_pagamento_cartao(
     _validar_pedido_para_novo_pagamento(pedido)
     _validar_valor_pagamento(data.transaction_amount, pedido.total)
 
-    sdk = _get_sdk()
-    idempotency_key = _idempotency_key(numero_pedido, "cartao")
     payment_data = {
         "transaction_amount": float(pedido.total),
         "token": data.token,
         "description": f"Bia Collections - Pedido {pedido.numero}",
         "installments": data.installments,
         "payment_method_id": data.payment_method_id,
-        "issuer_id": data.issuer_id,
         "payer": {
             "email": data.payer.email,
             "identification": data.payer.identification.model_dump(),
@@ -720,17 +726,50 @@ def criar_pagamento_cartao(
             "payment_flow": "cartao",
         },
     }
+
+    if data.issuer_id:
+        payment_data["issuer_id"] = data.issuer_id
+
     notification_url = _notification_url()
+    
     if notification_url:
         payment_data["notification_url"] = notification_url
 
-    result = _criar_recurso_mp(sdk.payment(), payment_data, idempotency_key)
-    response = result.get("response", {})
-    if result.get("status") not in (200, 201):
-        raise HTTPException(
-            status_code=502,
-            detail=f"Erro ao processar pagamento: {_mensagem_erro_mp(response)}",
+    try:
+        result = _criar_recurso_mp(
+            sdk.payment(),
+            payment_data,
+            idempotency_key,
         )
+    except Exception:
+        logger.exception(
+            "Erro inesperado na chamada ao Mercado Pago. pedido=%s",
+            numero_pedido,
+        )
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="Falha de comunicacao com o Mercado Pago.",
+    )
+
+    response = result.get("response") or {}
+    mp_http_status = result.get("status")
+
+    if mp_http_status not in (200, 201):
+        mensagem = _mensagem_erro_mp(response)
+
+    logger.error(
+        "Mercado Pago recusou pagamento: "
+        "pedido=%s status_http=%s message=%s response=%s",
+        numero_pedido,
+        mp_http_status,
+        mensagem,
+        response,
+    )
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Mercado Pago recusou o pagamento: {mensagem}",
+    )
 
     payment_id = str(response.get("id") or "")
     mp_status = response.get("status") or "pending"
