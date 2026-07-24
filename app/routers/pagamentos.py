@@ -701,14 +701,32 @@ def criar_pagamento_cartao(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
-    pedido = db.query(Pedido).filter(
-        Pedido.numero == numero_pedido,
-        Pedido.usuario_id == current_user.id,
-    ).first()
+    pedido = (
+        db.query(Pedido)
+        .filter(
+            Pedido.numero == numero_pedido,
+            Pedido.usuario_id == current_user.id,
+        )
+        .first()
+    )
+
     if not pedido:
-        raise HTTPException(status_code=404, detail="Pedido nao encontrado.")
+        raise HTTPException(
+            status_code=404,
+            detail="Pedido nao encontrado.",
+        )
+
     _validar_pedido_para_novo_pagamento(pedido)
-    _validar_valor_pagamento(data.transaction_amount, pedido.total)
+    _validar_valor_pagamento(
+        data.transaction_amount,
+        pedido.total,
+    )
+
+    sdk = _get_sdk()
+    idempotency_key = _idempotency_key(
+        numero_pedido,
+        "cartao",
+    )
 
     payment_data = {
         "transaction_amount": float(pedido.total),
@@ -718,7 +736,9 @@ def criar_pagamento_cartao(
         "payment_method_id": data.payment_method_id,
         "payer": {
             "email": data.payer.email,
-            "identification": data.payer.identification.model_dump(),
+            "identification": (
+                data.payer.identification.model_dump()
+            ),
         },
         "external_reference": pedido.numero,
         "metadata": {
@@ -731,7 +751,7 @@ def criar_pagamento_cartao(
         payment_data["issuer_id"] = data.issuer_id
 
     notification_url = _notification_url()
-    
+
     if notification_url:
         payment_data["notification_url"] = notification_url
 
@@ -746,10 +766,11 @@ def criar_pagamento_cartao(
             "Erro inesperado na chamada ao Mercado Pago. pedido=%s",
             numero_pedido,
         )
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="Falha de comunicacao com o Mercado Pago.",
-    )
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Falha de comunicacao com o Mercado Pago.",
+        )
 
     response = result.get("response") or {}
     mp_http_status = result.get("status")
@@ -757,28 +778,38 @@ def criar_pagamento_cartao(
     if mp_http_status not in (200, 201):
         mensagem = _mensagem_erro_mp(response)
 
-    logger.error(
-        "Mercado Pago recusou pagamento: "
-        "pedido=%s status_http=%s message=%s response=%s",
-        numero_pedido,
-        mp_http_status,
-        mensagem,
-        response,
-    )
+        logger.error(
+            "Mercado Pago recusou pagamento: "
+            "pedido=%s status_http=%s message=%s response=%s",
+            numero_pedido,
+            mp_http_status,
+            mensagem,
+            response,
+        )
 
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail=f"Mercado Pago recusou o pagamento: {mensagem}",
-    )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Mercado Pago recusou o pagamento: {mensagem}",
+        )
 
     payment_id = str(response.get("id") or "")
-    mp_status = response.get("status") or "pending"
-    status_pagamento = MP_TO_PAYMENT_STATUS.get(mp_status, mp_status or "pendente")
+    mp_status = str(response.get("status") or "pending")
+
+    status_pagamento = MP_TO_PAYMENT_STATUS.get(
+        mp_status,
+        mp_status or "pendente",
+    )
+
     novo_status_pedido = MP_TO_ORDER_STATUS.get(mp_status)
+
     if novo_status_pedido:
         pedido.status = novo_status_pedido
+
         if novo_status_pedido == ORDER_STATUS_PAGO:
-            _registrar_cupom_pagamento_aprovado(db, pedido)
+            _registrar_cupom_pagamento_aprovado(
+                db,
+                pedido,
+            )
 
     pagamento = Pagamento(
         pedido_numero=numero_pedido,
@@ -789,13 +820,21 @@ def criar_pagamento_cartao(
         status=status_pagamento,
         mp_status=mp_status,
     )
+
     db.add(pagamento)
     db.commit()
+    db.refresh(pagamento)
+    db.refresh(pedido)
 
     event_key = PAYMENT_EMAIL_EVENTS.get(mp_status)
+
     if event_key:
-        db.refresh(pedido)
-        _trigger_payment_email_event(db, event_key, pedido, pagamento=pagamento)
+        _trigger_payment_email_event(
+            db,
+            event_key,
+            pedido,
+            pagamento=pagamento,
+        )
 
     return PagamentoCartaoResponse(
         payment_id=payment_id,
@@ -803,7 +842,10 @@ def criar_pagamento_cartao(
         mp_status=mp_status,
         status_detail=response.get("status_detail"),
         status_pedido=pedido.status,
-        payment_method_id=str(response.get("payment_method_id") or data.payment_method_id),
+        payment_method_id=str(
+            response.get("payment_method_id")
+            or data.payment_method_id
+        ),
     )
 
 
