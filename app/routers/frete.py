@@ -47,4 +47,3 @@ def calcular(data: FreteRequest, db: Session = Depends(get_db)):
         "cep": data.cep_destino,
         "opcoes": opcoes,
     }
-x
