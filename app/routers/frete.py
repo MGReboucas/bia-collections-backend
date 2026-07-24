@@ -23,10 +23,28 @@ class FreteRequest(BaseModel):
 @router.post("/calcular")
 def calcular(data: FreteRequest, db: Session = Depends(get_db)):
     for item in data.itens:
-        produto = db.query(Produto).filter(Produto.id == item.produto_id).first()
+        if item.quantidade < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="A quantidade deve ser maior que zero.",
+            )
+
+        produto = (
+            db.query(Produto)
+            .filter(Produto.id == item.produto_id)
+            .first()
+        )
+
         if not produto:
             raise HTTPException(
                 status_code=404,
                 detail=f"Produto {item.produto_id} não encontrado.",
             )
-    return calcular_frete(data.cep_destino)
+
+    opcoes = calcular_frete(data.cep_destino)
+
+    return {
+        "cep": data.cep_destino,
+        "opcoes": opcoes,
+    }
+x
