@@ -200,11 +200,11 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.refresh(user)
     
     try:
-    trigger_welcome_email_event(db, user)
-except Exception:
-    logger.exception(
-        "Falha ao disparar email de boas-vindas para %s",
-        _email_mascarado(user.email),
+        trigger_welcome_email_event(db, user)
+    except Exception:
+        logger.exception(
+            "Falha ao disparar email de boas-vindas para %s",
+            _email_mascarado(user.email),
     )
 
     challenge = create_two_factor_challenge(db, user)
