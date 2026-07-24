@@ -81,18 +81,24 @@ class PagamentoCartaoPagador(BaseModel):
 class PagamentoCartaoRequest(BaseModel):
     token: str
     payment_method_id: str
-    issuer_id: str
+    issuer_id: Optional[str] = None
     installments: int = Field(..., ge=1)
     transaction_amount: float = Field(..., gt=0)
     payer: PagamentoCartaoPagador
 
-    @field_validator("token", "payment_method_id", "issuer_id")
+    @field_validator("token", "payment_method_id")
     @classmethod
     def campo_obrigatorio(cls, value: str) -> str:
         value = str(value or "").strip()
         if not value:
             raise ValueError("Dados do cartao incompletos.")
         return value
+
+    @field_validator("issuer_id")
+    @classmethod
+    def emissor_opcional(cls, value: Optional[str]) -> Optional[str]:
+        value = str(value or "").strip()
+        return value or None
 
 
 class PagamentoCartaoResponse(BaseModel):

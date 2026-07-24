@@ -2033,6 +2033,79 @@ def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkey
     assert email_events == [("payment_approved", "0000003")]
 
 
+def test_pagamento_cartao_sem_issuer_nao_bloqueia_checkout(client, monkeypatch):
+    create_user("cliente-cartao-sem-issuer", "cliente-cartao-sem-issuer@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-cartao-sem-issuer").one()
+        db.add(
+            Pedido(
+                numero="0000007",
+                usuario_id=user.id,
+                status="Aguardando pagamento",
+                forma_pagamento="cartao",
+                subtotal=100.0,
+                valor_frete=0.0,
+                total=100.0,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    creates = []
+
+    class FakePaymentResource:
+        def create(self, payload, options=None):
+            creates.append(payload)
+            return {
+                "status": 201,
+                "response": {
+                    "id": "pay_card_no_issuer",
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "payment_method_id": payload["payment_method_id"],
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            assert token == "token"
+
+        def payment(self):
+            return FakePaymentResource()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(
+        pagamentos_module,
+        "trigger_order_email_event",
+        lambda *args, **kwargs: None,
+    )
+
+    response = client.post(
+        "/api/v1/pagamentos/cartao/0000007",
+        json={
+            "token": "card-token",
+            "payment_method_id": "visa",
+            "issuer_id": "",
+            "installments": 1,
+            "transaction_amount": 100.0,
+            "payer": {
+                "email": "pagador@example.com",
+                "identification": {"type": "CPF", "number": "12345678909"},
+            },
+        },
+        headers=auth_headers("cliente-cartao-sem-issuer"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "aprovado"
+    assert len(creates) == 1
+    assert "issuer_id" not in creates[0]
+
+
 def test_pagamento_cartao_valor_divergente_retorna_422(client, monkeypatch):
     create_user("cliente-cartao-divergente", "cliente-cartao-divergente@example.com")
     db = SessionLocal()
