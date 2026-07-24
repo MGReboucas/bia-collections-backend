@@ -16,7 +16,10 @@ from app.core.auth_cookies import clear_auth_cookies, issue_auth_cookies, set_cs
 from app.core.security import verify_password, get_password_hash
 from app.core.email import enviar_email_codigo_acesso, enviar_email_reset
 from app.modules.email.models import EmailTemplate
-from app.modules.email.service import EmailAutomationService
+from app.modules.email.service import (
+    EmailAutomationService,
+    trigger_welcome_email_event,
+)
 from app.services.two_factor_service import (
     CreatedTwoFactorChallenge,
     TwoFactorError,
@@ -39,6 +42,7 @@ from app.schemas.auth import (
     UsuarioBasico,
     VerifyTwoFactorRequest,
 )
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -194,6 +198,15 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.add(user)
     db.commit()
     db.refresh(user)
+    
+    try:
+    trigger_welcome_email_event(db, user)
+except Exception:
+    logger.exception(
+        "Falha ao disparar email de boas-vindas para %s",
+        _email_mascarado(user.email),
+    )
+
     challenge = create_two_factor_challenge(db, user)
     _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Conta criada. Codigo enviado por e-mail.")

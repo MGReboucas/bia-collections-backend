@@ -1146,3 +1146,52 @@ def trigger_order_email_event(
         EmailAutomationService(db).trigger_event(event_key, payload)
     except Exception:
         logger.exception("Falha ao disparar automacao de email event_key=%s pedido=%s", event_key, pedido.numero)
+
+def trigger_welcome_email_event(
+    db: Session,
+    usuario: Usuario,
+) -> None:
+    try:
+        cliente_nome = (
+            usuario.nome_completo
+            or usuario.username
+            or "cliente"
+        )
+
+        store_url = (
+            settings.STORE_URL
+            or settings.FRONTEND_URL
+            or "/"
+        )
+
+        payload = {
+            "to": usuario.email,
+            "email": usuario.email,
+            "customer_email": usuario.email,
+            "cliente_email": usuario.email,
+
+            "customer_name": cliente_nome,
+            "cliente_nome": cliente_nome,
+
+            "user_id": usuario.id,
+
+            "store_name": settings.STORE_NAME,
+            "loja_nome": settings.STORE_NAME,
+
+            "store_url": store_url,
+            "loja_url": store_url,
+
+            "dedupe_key": f"user_registered:{usuario.id}",
+        }
+
+        EmailAutomationService(db).trigger_event(
+            "user_registered",
+            payload,
+        )
+
+    except Exception:
+        logger.exception(
+            "Falha ao disparar email de boas-vindas "
+            "usuario_id=%s",
+            usuario.id,
+        )

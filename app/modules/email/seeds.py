@@ -318,13 +318,19 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         category="conta",
         subject="Bem-vinda a Bia Collections",
         preheader="Sua conta foi criada com sucesso.",
-        title="Bem-vinda a Bia",
-        intro="Ola {{customer_name}}, sua conta ja esta pronta.",
-        body_html="<p>Que bom ter voce por aqui. A partir de agora, voce pode acompanhar pedidos, salvar enderecos e receber novidades da Bia Collections.</p>",
+        title="Bem-vinda a Loja",
+        intro="Ola {{customer_name}}, sua conta já esta pronta.",
+        body_html=(
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Que bom ter voce por aqui. Agora voce pode acompanhar pedidos, salvar enderecos e receber novidades escolhidas com cuidado.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{store_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Ir para a home da Bia Collections</a></p>"
+        ),
         text_template="Ola {{customer_name}}, sua conta na Bia Collections foi criada com sucesso.",
         variables=("customer_name", "store_url"),
-        cta_label="Ver loja",
-        cta_url="{{store_url}}",
+        cta_label="Ver Instagram",
+        cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="Confirmacao de e-mail",
