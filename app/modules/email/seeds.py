@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -12,6 +13,204 @@ from app.modules.email.templates import BRAND_INSTAGRAM_URL, brand_email_html
 
 def _schema(*variables: str) -> str:
     return json.dumps({"variables": list(variables)}, ensure_ascii=False)
+
+
+PREMIUM_TEMPLATE_MARKER = 'data-bia-template-style="premium-v2"'
+
+
+_PORTUGUESE_COPY_REPLACEMENTS = {
+    "Confirmacao": "Confirmação",
+    "confirmacao": "confirmação",
+    "Preparacao": "Preparação",
+    "preparacao": "preparação",
+    "Solicitacao": "Solicitação",
+    "solicitacao": "solicitação",
+    "Atualizacao": "Atualização",
+    "atualizacao": "atualização",
+    "Informacao": "Informação",
+    "informacao": "informação",
+    "informacoes": "informações",
+    "Alteracao": "Alteração",
+    "alteracao": "alteração",
+    "Atencao": "Atenção",
+    "atencao": "atenção",
+    "Avaliacao": "Avaliação",
+    "avaliacao": "avaliação",
+    "Experiencia": "Experiência",
+    "experiencia": "experiência",
+    "Opiniao": "Opinião",
+    "opiniao": "opinião",
+    "Confianca": "Confiança",
+    "confianca": "confiança",
+    "Codigo": "Código",
+    "codigo": "código",
+    "Seguranca": "Segurança",
+    "seguranca": "segurança",
+    "Recuperacao": "Recuperação",
+    "recuperacao": "recuperação",
+    "Redefinicao": "Redefinição",
+    "redefinicao": "redefinição",
+    "Visualizacao": "Visualização",
+    "visualizacao": "visualização",
+    "Instituicao": "Instituição",
+    "instituicao": "instituição",
+    "Endereco": "Endereço",
+    "endereco": "endereço",
+    "Enderecos": "Endereços",
+    "enderecos": "endereços",
+    "Numero": "Número",
+    "numero": "número",
+    "Analise": "Análise",
+    "analise": "análise",
+    "Beneficio": "Benefício",
+    "beneficio": "benefício",
+    "Botao": "Botão",
+    "botao": "botão",
+    "Devolucao": "Devolução",
+    "devolucao": "devolução",
+    "Diferenca": "Diferença",
+    "diferenca": "diferença",
+    "Minimo": "Mínimo",
+    "minimo": "mínimo",
+    "Verificacao": "Verificação",
+    "verificacao": "verificação",
+    "Protocolo": "Protocolo",
+    "proximos": "próximos",
+    "proximo": "próximo",
+    "orientacoes": "orientações",
+    "necessaria": "necessária",
+    "possivel": "possível",
+    "sensivel": "sensível",
+    "disponivel": "disponível",
+    "duvida": "dúvida",
+    "duvidas": "dúvidas",
+    "acao": "ação",
+    "acoes": "ações",
+    "Ola": "Olá",
+    "Voce": "Você",
+    "voce": "você",
+    "Voces": "Vocês",
+    "voces": "vocês",
+    "Nao": "Não",
+    "nao": "não",
+    "Esta": "Está",
+    "esta": "está",
+    "Ja": "Já",
+    "ja": "já",
+    "So": "Só",
+    "so": "só",
+    "Ate": "Até",
+    "ate": "até",
+    "Apos": "Após",
+    "apos": "após",
+    "Sera": "Será",
+    "sera": "será",
+    "Faca": "Faça",
+    "faca": "faça",
+    "Atraves": "Através",
+    "atraves": "através",
+    "recebera": "receberá",
+    "acompanhara": "acompanhará",
+    "seguira": "seguirá",
+    "Email": "E-mail",
+    "email": "e-mail",
+}
+
+
+def _review_portuguese_copy(value: str) -> str:
+    placeholders: list[str] = []
+
+    def protect_placeholder(match: re.Match[str]) -> str:
+        placeholders.append(match.group(0))
+        return f"__BIA_TEMPLATE_VARIABLE_{len(placeholders) - 1}__"
+
+    reviewed = re.sub(r"{{[^{}]+}}", protect_placeholder, value)
+    reviewed = reviewed.replace("data-bia-email-logo", "__BIA_EMAIL_LOGO_ATTRIBUTE__")
+    reviewed = reviewed.replace("/uploads/email/", "/uploads/__BIA_EMAIL_PATH__/")
+    reviewed = reviewed.replace("Bem-vinda a Loja", "Bem-vinda à Bia Collections")
+    reviewed = reviewed.replace("Bem-vinda a Bia", "Bem-vinda à Bia")
+    reviewed = reviewed.replace("Bem-vinda a __BIA_TEMPLATE_VARIABLE_", "Bem-vinda à __BIA_TEMPLATE_VARIABLE_")
+    reviewed = reviewed.replace("pos-venda", "pós-venda")
+    for source, target in _PORTUGUESE_COPY_REPLACEMENTS.items():
+        if source in {"Esta", "esta"}:
+            continue
+        reviewed = re.sub(rf"\b{re.escape(source)}\b", target, reviewed)
+    for source, target in (
+        ("esta pronta", "está pronta"),
+        ("esta pronto", "está pronto"),
+        ("esta salvo", "está salvo"),
+        ("esta salva", "está salva"),
+        ("esta liberado", "está liberado"),
+        ("esta liberada", "está liberada"),
+        ("esta disponível", "está disponível"),
+        ("esta sendo", "está sendo"),
+        ("esta em preparo", "está em preparo"),
+        ("esta em preparação", "está em preparação"),
+        ("esta expirando", "está expirando"),
+        ("esta chegando", "está chegando"),
+        ("esta com estoque", "está com estoque"),
+        ("ainda esta", "ainda está"),
+        ("já esta", "já está"),
+        ("Já esta", "Já está"),
+        ("nenhuma ação e necessária", "nenhuma ação é necessária"),
+        ("O valor aprovado e ", "O valor aprovado é "),
+        ("Seu código de acesso e:", "Seu código de acesso é:"),
+        ("seu código de acesso e:", "seu código de acesso é:"),
+        ("Qualquer dúvida, fale", "Em caso de dúvida, fale"),
+        ("vai analisar as informações e retornar", "analisará as informações e retornará"),
+    ):
+        reviewed = reviewed.replace(source, target)
+    reviewed = reviewed.replace("Código copia e cola", "Código Pix Copia e Cola")
+    reviewed = reviewed.replace("__BIA_EMAIL_LOGO_ATTRIBUTE__", "data-bia-email-logo")
+    reviewed = reviewed.replace("/uploads/__BIA_EMAIL_PATH__/", "/uploads/email/")
+    reviewed = re.sub(
+        r"(__BIA_TEMPLATE_VARIABLE_\d+__)\s+([.,;:!?])",
+        r"\1\2",
+        reviewed,
+    )
+    for index, placeholder in enumerate(placeholders):
+        reviewed = reviewed.replace(f"__BIA_TEMPLATE_VARIABLE_{index}__", placeholder)
+    return reviewed
+
+
+def _premium_body(body_html: str, *, internal: bool = False) -> str:
+    alignment = "left" if internal else "center"
+    return (
+        f'<div {PREMIUM_TEMPLATE_MARKER} '
+        f'style="text-align: {alignment}; color: #4e4a45;">'
+        f"{body_html}"
+        "</div>"
+    )
+
+
+def _default_customer_cta(
+    variables: tuple[str, ...],
+    *,
+    admin: bool,
+) -> tuple[str | None, str | None]:
+    candidates = (
+        (
+            ("link_meus_pedidos", "Ver meus pedidos", "{{link_meus_pedidos}}"),
+            ("loja_home_url", "Visitar a loja", "{{loja_home_url}}"),
+            ("loja_url", "Visitar a loja", "{{loja_url}}"),
+        )
+        if admin
+        else (
+            ("orders_url", "Ver meus pedidos", "{{orders_url}}"),
+            ("store_home_url", "Visitar a loja", "{{store_home_url}}"),
+            ("store_url", "Visitar a loja", "{{store_url}}"),
+        )
+    )
+    for variable, label, url in candidates:
+        if variable in variables:
+            return label, url
+    return None, None
+
+
+def _premium_text(text_template: str, *, internal: bool) -> str:
+    if internal or BRAND_INSTAGRAM_URL in text_template:
+        return text_template
+    return f"{text_template.rstrip()} Confira novidades no Instagram: {BRAND_INSTAGRAM_URL}"
 
 
 def _template(
@@ -31,6 +230,21 @@ def _template(
     footer_cta_label: str | None = None,
     footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
+    name = _review_portuguese_copy(name)
+    subject = _review_portuguese_copy(subject)
+    preheader = _review_portuguese_copy(preheader)
+    title = _review_portuguese_copy(title)
+    intro = _review_portuguese_copy(intro)
+    body_html = _review_portuguese_copy(body_html)
+    text_template = _review_portuguese_copy(text_template)
+    cta_label = _review_portuguese_copy(cta_label) if cta_label else None
+    footer_cta_label = _review_portuguese_copy(footer_cta_label) if footer_cta_label else None
+    if not cta_label or not cta_url:
+        default_label, default_url = _default_customer_cta(variables, admin=False)
+        cta_label = cta_label or default_label
+        cta_url = cta_url or default_url
+    footer_cta_label = footer_cta_label or "Ver Instagram"
+    footer_cta_url = footer_cta_url or BRAND_INSTAGRAM_URL
     return {
         "name": name,
         "slug": slug,
@@ -41,13 +255,13 @@ def _template(
             title=title,
             preheader=preheader,
             intro=intro,
-            body_html=body_html,
+            body_html=_premium_body(body_html),
             cta_label=cta_label,
             cta_url=cta_url,
             footer_cta_label=footer_cta_label,
             footer_cta_url=footer_cta_url,
         ),
-        "text_template": text_template,
+        "text_template": _premium_text(text_template, internal=False),
         "variables_schema": _schema(*variables),
         "is_active": True,
     }
@@ -71,11 +285,28 @@ def _admin_template(
     footer_cta_label: str | None = None,
     footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
+    nome = _review_portuguese_copy(nome)
+    assunto = _review_portuguese_copy(assunto)
+    preheader = _review_portuguese_copy(preheader)
+    title = _review_portuguese_copy(title)
+    intro = _review_portuguese_copy(intro)
+    body_html = _review_portuguese_copy(body_html)
+    text_template = _review_portuguese_copy(text_template)
+    cta_label = _review_portuguese_copy(cta_label) if cta_label else None
+    footer_cta_label = _review_portuguese_copy(footer_cta_label) if footer_cta_label else None
+    internal = evento.startswith("interno_")
+    if not internal and (not cta_label or not cta_url):
+        default_label, default_url = _default_customer_cta(variables, admin=True)
+        cta_label = cta_label or default_label
+        cta_url = cta_url or default_url
+    if not internal:
+        footer_cta_label = footer_cta_label or "Ver Instagram"
+        footer_cta_url = footer_cta_url or BRAND_INSTAGRAM_URL
     html = brand_email_html(
         title=title,
         preheader=preheader,
         intro=intro,
-        body_html=body_html,
+        body_html=_premium_body(body_html, internal=internal),
         cta_label=cta_label,
         cta_url=cta_url,
         footer_cta_label=footer_cta_label,
@@ -92,7 +323,7 @@ def _admin_template(
         "status": status,
         "html": html,
         "html_template": html,
-        "text_template": text_template,
+        "text_template": _premium_text(text_template, internal=internal),
         "variables_schema": _schema(*variables),
         "is_active": status == "ativo",
     }
@@ -169,6 +400,19 @@ PAYMENT_PENDING_TEMPLATE_CURRENT_MARKERS = (
     "order_items_html",
     "pedido_itens_html",
     "Finalizar pagamento",
+)
+PAYMENT_EXPIRED_TEMPLATE_REFRESH_SLUGS = {"payment-expired", "admin-default-pagamento-expirado"}
+PAYMENT_EXPIRED_TEMPLATE_REFRESH_MARKERS = (
+    "Se ainda quiser os produtos, faca uma nova compra",
+    "Se ainda quiser os produtos, faça uma nova compra",
+    "O pedido nao seguira para preparo",
+    "O pedido não seguirá para preparo",
+)
+PAYMENT_EXPIRED_TEMPLATE_CURRENT_MARKERS = (
+    "order_items_html",
+    "pedido_itens_html",
+    "Uma nova chance para escolher seus favoritos",
+    "Comprar novamente",
 )
 
 
@@ -309,6 +553,69 @@ def _refresh_payment_pending_template_if_old(template: EmailTemplate, data: dict
         if key in {"status", "is_active"}:
             continue
         setattr(template, key, value)
+
+
+def _refresh_payment_expired_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
+    if data["slug"] not in PAYMENT_EXPIRED_TEMPLATE_REFRESH_SLUGS:
+        return
+
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in (
+            "nome",
+            "name",
+            "subject",
+            "preheader",
+            "html",
+            "html_template",
+            "text_template",
+            "variables_schema",
+        )
+    )
+    if any(marker in content for marker in PAYMENT_EXPIRED_TEMPLATE_CURRENT_MARKERS):
+        return
+    if not any(marker in content for marker in PAYMENT_EXPIRED_TEMPLATE_REFRESH_MARKERS):
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _refresh_premium_template_if_seeded(template: EmailTemplate, data: dict[str, Any]) -> None:
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in ("html", "html_template")
+    )
+    if PREMIUM_TEMPLATE_MARKER in content:
+        return
+
+    created_at = getattr(template, "created_at", None)
+    updated_at = getattr(template, "updated_at", None)
+    if created_at and updated_at and updated_at != created_at:
+        # Templates edited through the admin keep their custom content.
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _review_existing_template_copy(template: EmailTemplate) -> None:
+    for key in (
+        "nome",
+        "name",
+        "subject",
+        "preheader",
+        "html",
+        "html_template",
+        "text_template",
+    ):
+        current = getattr(template, key, None)
+        if isinstance(current, str) and current:
+            setattr(template, key, _review_portuguese_copy(current))
 
 
 EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
@@ -601,15 +908,54 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         name="Pagamento expirado",
         slug="payment-expired",
         category="pagamentos",
-        subject="Pagamento expirado - Pedido {{order_number}}",
-        preheader="O prazo de pagamento terminou.",
+        subject="Seu pedido {{order_number}} expirou — seus favoritos ainda esperam por você",
+        preheader="O prazo terminou, mas você pode escolher seus favoritos novamente.",
         title="Pagamento expirado",
-        intro="O prazo de pagamento do pedido {{order_number}} terminou.",
-        body_html="<p>Se ainda quiser os produtos, faca uma nova compra na loja.</p>",
-        text_template="O pagamento do pedido {{order_number}} expirou.",
-        variables=("order_number", "store_url"),
-        cta_label="Voltar para loja",
-        cta_url="{{store_url}}",
+        intro="Olá {{customer_name}}, o prazo para pagar o pedido {{order_number}} terminou.",
+        body_html=(
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "<strong>Uma nova chance para escolher seus favoritos.</strong></p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Como o pagamento não foi concluído a tempo, o pedido foi encerrado e não seguirá para preparo.</p>"
+            "{{order_items_html}}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Valor do pedido expirado</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{order_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Se você ainda amou essas peças, volte à loja e monte seu pedido novamente. "
+            "A disponibilidade pode mudar, então aproveite para garantir seus favoritos.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{orders_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Consultar meus pedidos</a></p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}, o prazo para pagar o pedido {{order_number}} terminou. "
+            "Itens: {{order_items_text}}. Valor do pedido expirado: {{order_total}}. "
+            "Você pode montar uma nova compra em {{store_home_url}}, conforme a disponibilidade dos produtos. "
+            "Consulte seus pedidos em {{orders_url}}. Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
+        ),
+        variables=(
+            "customer_name",
+            "order_number",
+            "order_total",
+            "order_items_html",
+            "order_items_text",
+            "orders_url",
+            "store_home_url",
+            "store_url",
+            "instagram_url",
+        ),
+        cta_label="Comprar novamente",
+        cta_url="{{store_home_url}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="PIX gerado",
@@ -992,21 +1338,55 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         nome="Pagamento expirado",
         slug="admin-default-pagamento-expirado",
         evento="pagamento_expirado",
-        assunto="Pagamento expirado - Pedido {{pedido_numero}}",
+        assunto="Seu pedido {{pedido_numero}} expirou — seus favoritos ainda esperam por você",
         title="Pagamento expirado",
-        preheader="O prazo para pagamento terminou.",
-        intro="Ola {{cliente_nome}}, o prazo de pagamento do pedido {{pedido_numero}} terminou.",
+        preheader="O prazo terminou, mas você pode escolher seus favoritos novamente.",
+        intro="Olá {{cliente_nome}}, o prazo para pagar o pedido {{pedido_numero}} terminou.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">O pedido nao seguira para preparo sem uma nova confirmacao de pagamento.</p>"
-            "<p style=\"margin: 0;\">Se ainda quiser os produtos, faca uma nova compra na loja.</p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "<strong>Uma nova chance para escolher seus favoritos.</strong></p>"
+            "<p style=\"margin: 0 0 16px; text-align: center;\">"
+            "Como o pagamento não foi concluído a tempo, o pedido foi encerrado e não seguirá para preparo.</p>"
+            "{{pedido_itens_html}}"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" "
+            "style=\"border-collapse: collapse; margin: 0 0 22px;\">"
+            "<tr>"
+            "<td style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 13px; line-height: 20px; color: #6f675f;\">Valor do pedido expirado</td>"
+            "<td align=\"right\" style=\"padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; "
+            "font-size: 15px; line-height: 20px; color: #111111;\"><strong>{{pedido_total}}</strong></td>"
+            "</tr>"
+            "</table>"
+            "<p style=\"margin: 0 0 18px; text-align: center;\">"
+            "Se você ainda amou essas peças, volte à loja e monte seu pedido novamente. "
+            "A disponibilidade pode mudar, então aproveite para garantir seus favoritos.</p>"
+            "<p style=\"margin: 0; text-align: center;\">"
+            "<a href=\"{{link_meus_pedidos}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
+            "Consultar meus pedidos</a></p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, o prazo de pagamento do pedido {{pedido_numero}} terminou. "
-            "Se ainda quiser os produtos, faca uma nova compra."
+            "Olá {{cliente_nome}}, o prazo para pagar o pedido {{pedido_numero}} terminou. "
+            "Itens: {{pedido_itens_text}}. Valor do pedido expirado: {{pedido_total}}. "
+            "Você pode montar uma nova compra em {{loja_home_url}}, conforme a disponibilidade dos produtos. "
+            "Consulte seus pedidos em {{link_meus_pedidos}}. Confira novidades no Instagram: "
+            f"{BRAND_INSTAGRAM_URL}"
         ),
-        variables=("cliente_nome", "pedido_numero", "pedido_total", "loja_nome", "loja_url"),
-        cta_label="Voltar para loja",
-        cta_url="{{loja_url}}",
+        variables=(
+            "cliente_nome",
+            "pedido_numero",
+            "pedido_total",
+            "pedido_itens_html",
+            "pedido_itens_text",
+            "link_meus_pedidos",
+            "loja_home_url",
+            "loja_nome",
+            "loja_url",
+            "instagram_url",
+        ),
+        cta_label="Comprar novamente",
+        cta_url="{{loja_home_url}}",
+        footer_cta_label="Ver Instagram",
+        footer_cta_url=BRAND_INSTAGRAM_URL,
     ),
     _admin_template(
         nome="Pedido em preparacao",
@@ -1513,6 +1893,9 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_payment_approved_template_if_old(template, data)
                 _refresh_payment_refused_template_if_old(template, data)
                 _refresh_payment_pending_template_if_old(template, data)
+                _refresh_payment_expired_template_if_old(template, data)
+                _refresh_premium_template_if_seeded(template, data)
+                _review_existing_template_copy(template)
             templates_by_slug[data["slug"]] = template
 
         for data in ADMIN_EMAIL_TEMPLATE_SEEDS:
@@ -1523,7 +1906,10 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_payment_approved_template_if_old(template, data)
                 _refresh_payment_refused_template_if_old(template, data)
                 _refresh_payment_pending_template_if_old(template, data)
+                _refresh_payment_expired_template_if_old(template, data)
+                _refresh_premium_template_if_seeded(template, data)
                 _fill_missing_admin_template_fields(template, data)
+                _review_existing_template_copy(template)
                 continue
 
             exists_for_event = (

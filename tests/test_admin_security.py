@@ -3,6 +3,8 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import re
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -30,7 +32,13 @@ from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
 from app.modules.email.models import EmailLog, EmailTemplate
-from app.modules.email.seeds import seed_email_automation
+from app.modules.email.seeds import (
+    ADMIN_EMAIL_TEMPLATE_SEEDS,
+    EMAIL_TEMPLATE_SEEDS,
+    _review_portuguese_copy,
+    seed_email_automation,
+)
+from app.modules.email.templates import password_reset_code_email
 from app.services.two_factor_service import hash_two_factor_token
 from main import app
 
@@ -3530,8 +3538,8 @@ def test_recuperacao_senha_usa_template_admin_e_log_sent(client, monkeypatch):
         event_key="recuperacao_senha",
         recipient="cliente-email-reset@example.com",
         status_log="enviado",
-        subject_contains="Redefinicao de senha - Bia Collections",
-        html_contains="Redefinicao de senha",
+        subject_contains="Redefinição de senha - Bia Collections",
+        html_contains="Redefinição de senha",
         text_contains="15",
         payload_values={"cliente_nome": "cliente-email-reset", "minutos_expiracao": "15"},
     )
@@ -3627,7 +3635,7 @@ def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypa
         event_key="cupom_disponivel",
         recipient="cliente-email-cupom@example.com",
         status_log="pendente",
-        subject_contains="Seu cupom EMAIL15 esta disponivel",
+        subject_contains="Seu cupom EMAIL15 está disponível",
         html_contains="EMAIL15",
         text_contains="EMAIL15",
         payload_values={"cupom_codigo": "EMAIL15", "cliente_nome": "cliente-email-cupom"},
@@ -3886,6 +3894,12 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert "Ir para a home da Bia Collections" in by_event["pagamento_pendente"]["html"]
     assert "pedido_itens_html" in by_event["pagamento_pendente"]["html"]
     assert "garantir seus produtos" in by_event["pagamento_pendente"]["html"]
+    assert "Uma nova chance para escolher seus favoritos" in by_event["pagamento_expirado"]["html"]
+    assert "pedido_itens_html" in by_event["pagamento_expirado"]["html"]
+    assert "Valor do pedido expirado" in by_event["pagamento_expirado"]["html"]
+    assert "Comprar novamente" in by_event["pagamento_expirado"]["html"]
+    assert "Ver Instagram" in by_event["pagamento_expirado"]["html"]
+    assert "Consultar meus pedidos" in by_event["pagamento_expirado"]["html"]
     assert "{{pedido_numero}}" in by_event["pedido_criado"]["assunto"]
     assert "{{cliente_nome}}" in by_event["pedido_criado"]["html"]
     assert "pedido_itens_html" in by_event["pedido_criado"]["html"]
@@ -3900,11 +3914,160 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert "Bia Collections" in by_event["pedido_criado"]["html"]
     assert "ACESSORIOS FEMININOS" not in by_event["pedido_criado"]["html"]
     assert "background: #111111" in by_event["pedido_criado"]["html"]
+    for evento, template in by_event.items():
+        assert 'data-bia-template-style="premium-v2"' in template["html"]
+        if not evento.startswith("interno_"):
+            assert "Ver Instagram" in template["html"]
+
+    db = SessionLocal()
+    try:
+        automation_templates = db.query(EmailTemplate).filter(EmailTemplate.evento.is_(None)).all()
+        assert automation_templates
+        for template in automation_templates:
+            assert 'data-bia-template-style="premium-v2"' in template.html_template
+            assert "Ver Instagram" in template.html_template
+
+        all_templates = db.query(EmailTemplate).all()
+        forbidden_unaccented_copy = re.compile(
+            r"\b(?:Ola|Voce|voce|Nao|nao|Codigo|Confirmacao|Preparacao|"
+            r"Solicitacao|Atualizacao|Informacao|informacoes|Alteracao|"
+            r"Atencao|Avaliacao|Experiencia|Opiniao|Confianca|Seguranca|"
+            r"Recuperacao|Redefinicao|Visualizacao|Instituicao|Endereco|"
+            r"enderecos|Analise|Beneficio|Botao|Devolucao|Diferenca|"
+            r"Minimo|Verificacao|orientacoes|necessaria|possivel|sensivel|"
+            r"disponivel|duvida|acoes)\b"
+        )
+        for template in all_templates:
+            copy = " ".join(
+                value
+                for value in (
+                    template.name,
+                    template.nome,
+                    template.subject,
+                    template.preheader,
+                    template.html,
+                    template.html_template,
+                    template.text_template,
+                )
+                if isinstance(value, str)
+            )
+            visible_copy = re.sub(r"{{[^{}]+}}", "", copy)
+            assert forbidden_unaccented_copy.search(visible_copy) is None
+
+        access_code = db.query(EmailTemplate).filter(
+            EmailTemplate.slug == "admin-default-codigo-acesso"
+        ).one()
+        assert "{{codigo}}" in access_code.html
+        assert "{{código}}" not in access_code.html
+
+        expirado = db.query(EmailTemplate).filter(
+            EmailTemplate.slug == "admin-default-pagamento-expirado"
+        ).one()
+        expirado.html = (
+            "<p>O pedido nao seguira para preparo sem uma nova confirmacao de pagamento.</p>"
+            "<p>Se ainda quiser os produtos, faca uma nova compra na loja.</p>"
+        )
+        expirado.html_template = expirado.html
+        expirado.variables_schema = json.dumps(
+            {"variables": ["cliente_nome", "pedido_numero", "pedido_total", "loja_nome", "loja_url"]}
+        )
+        db.commit()
+    finally:
+        db.close()
 
     seed_email_automation()
     db = SessionLocal()
     try:
+        expirado_atualizado = db.query(EmailTemplate).filter(
+            EmailTemplate.slug == "admin-default-pagamento-expirado"
+        ).one()
+        assert "Uma nova chance para escolher seus favoritos" in expirado_atualizado.html
+        assert "Comprar novamente" in expirado_atualizado.html
         assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 30
+    finally:
+        db.close()
+
+
+def test_todos_os_templates_padrao_tem_gramatica_revisada():
+    forbidden = re.compile(
+        r"\b(?:Ola|Voce|voce|Nao|nao|Ja|ja|Confirmacao|confirmacao|"
+        r"Preparacao|preparacao|Solicitacao|solicitacao|Atualizacao|atualizacao|"
+        r"Informacao|informacao|informacoes|Codigo|codigo|Seguranca|seguranca|"
+        r"Recuperacao|recuperacao|Endereco|endereco|Numero|numero|Analise|analise|"
+        r"proximo|proximos|orientacoes|necessaria|possivel|sensivel|disponivel|"
+        r"duvida|duvidas|acao|acoes|Ate|ate|Apos|apos|Sera|sera|Faca|faca|"
+        r"Atraves|atraves|recebera|acompanhara|seguira)\b"
+    )
+
+    for template in EMAIL_TEMPLATE_SEEDS + ADMIN_EMAIL_TEMPLATE_SEEDS:
+        for field in (
+            "name",
+            "nome",
+            "subject",
+            "assunto",
+            "preheader",
+            "html",
+            "html_template",
+            "text_template",
+        ):
+            value = template.get(field)
+            if isinstance(value, str):
+                visible_copy = re.sub(r"{{[^{}]+}}", "", value)
+                assert forbidden.search(visible_copy) is None, (
+                    f"{template['slug']}.{field} ainda contém texto sem revisão"
+                )
+
+        serialized = json.dumps(template, ensure_ascii=False)
+        assert "data-bia-e-mail-logo" not in serialized
+        assert "está mensagem" not in serialized
+        assert "está alteração" not in serialized
+
+
+def test_revisao_gramatical_distingue_esta_de_esta_com_acento():
+    reviewed = _review_portuguese_copy(
+        "Ola, esta mensagem esta disponível. "
+        "Se nao reconhece esta alteracao, nenhuma acao e necessaria."
+    )
+
+    assert reviewed == (
+        "Olá, esta mensagem está disponível. "
+        "Se não reconhece esta alteração, nenhuma ação é necessária."
+    )
+
+
+def test_email_direto_de_redefinicao_de_senha_tem_gramatica_revisada():
+    message = password_reset_code_email("123456")
+
+    assert message.subject == "Redefinição de senha - Bia Collections"
+    assert "Use o código 123456" in message.text
+    assert "não solicitou essa alteração" in message.text
+    assert "solicitação" in message.html
+    assert "recuperação de senha" in message.html
+
+
+def test_seed_preserva_template_padrao_personalizado_manualmente(client):
+    seed_email_automation()
+    db = SessionLocal()
+    try:
+        template = db.query(EmailTemplate).filter(
+            EmailTemplate.slug == "admin-default-pedido-preparando"
+        ).one()
+        template.html = "<html><body>CONTEUDO PERSONALIZADO DA LOJA</body></html>"
+        template.html_template = template.html
+        template.updated_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+        db.commit()
+    finally:
+        db.close()
+
+    seed_email_automation()
+
+    db = SessionLocal()
+    try:
+        template = db.query(EmailTemplate).filter(
+            EmailTemplate.slug == "admin-default-pedido-preparando"
+        ).one()
+        assert template.html == "<html><body>CONTEUDO PERSONALIZADO DA LOJA</body></html>"
+        assert template.html_template == template.html
     finally:
         db.close()
 

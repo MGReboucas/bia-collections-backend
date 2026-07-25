@@ -309,20 +309,20 @@ def two_factor_code_email(codigo: str) -> BrandEmailMessage:
 
 def password_reset_code_email(codigo: str) -> BrandEmailMessage:
     return BrandEmailMessage(
-        subject="Redefinicao de senha - Bia Collections",
+        subject="Redefinição de senha - Bia Collections",
         text=(
-            f"Use o codigo {codigo} para redefinir sua senha.\n"
+            f"Use o código {codigo} para redefinir sua senha.\n"
             "Ele expira em 15 minutos.\n\n"
-            "Se voce nao solicitou isso, ignore este e-mail."
+            "Se você não solicitou essa alteração, ignore este e-mail."
         ),
         html=brand_email_html(
-            title="Redefinicao de senha",
-            preheader="Use este codigo para criar uma nova senha.",
-            intro="Recebemos uma solicitacao para redefinir sua senha.",
+            title="Redefinição de senha",
+            preheader="Use este código para criar uma nova senha.",
+            intro="Recebemos uma solicitação para redefinir sua senha.",
             code=codigo,
             body_html=(
                 "<p style=\"margin: 0 0 12px; text-align: center;\">"
-                "Digite o codigo acima na tela de recuperacao de senha.</p>"
+                "Digite o código acima na tela de recuperação de senha.</p>"
                 "<p style=\"margin: 0; text-align: center;\">"
                 "Ele expira em <strong>15 minutos</strong>.</p>"
             ),

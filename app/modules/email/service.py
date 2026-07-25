@@ -772,7 +772,7 @@ def _payment_status_label(pedido: Pedido, pagamento: Pagamento | None) -> str:
 
 
 def _payment_method_label(pedido: Pedido, pagamento: Pagamento | None) -> str:
-    return str((pagamento.tipo if pagamento else None) or pedido.forma_pagamento or "").strip() or "nao informado"
+    return str((pagamento.tipo if pagamento else None) or pedido.forma_pagamento or "").strip() or "não informado"
 
 
 def _format_email_money(value: Any) -> str:
@@ -872,8 +872,8 @@ def _order_items_email_text(items: list[ItemPedido]) -> str:
     for item in items:
         details = [
             f"quantidade {getattr(item, 'quantidade', 0) or 0}",
-            f"cor {getattr(item, 'cor', None) or 'Nao informada'}",
-            f"modelo/tamanho {getattr(item, 'tamanho', None) or 'Nao informado'}",
+            f"cor {getattr(item, 'cor', None) or 'Não informada'}",
+            f"modelo/tamanho {getattr(item, 'tamanho', None) or 'Não informado'}",
             f"valor unitario {_format_email_money(getattr(item, 'preco_unitario', 0))}",
         ]
         lines.append(f"{getattr(item, 'nome_produto', None) or 'Produto'} ({', '.join(details)})")
@@ -979,7 +979,7 @@ def _admin_order_paid_email_content(payload: dict[str, Any]) -> tuple[str, str, 
         ("Total", str(payload.get("pedido_total") or payload.get("order_total") or "")),
         ("Forma de pagamento", str(payload.get("forma_pagamento") or payload.get("payment_method") or "")),
         ("Status do pagamento", str(payload.get("status_pagamento") or payload.get("payment_status") or "")),
-        ("Pagamento Mercado Pago", str(payload.get("mp_payment_id") or "nao informado")),
+        ("Pagamento Mercado Pago", str(payload.get("mp_payment_id") or "não informado")),
         ("Painel admin", str(payload.get("link_pedido_admin") or payload.get("admin_order_url") or "")),
     ]
     body_html = (
@@ -1011,7 +1011,7 @@ def _admin_order_paid_email_content(payload: dict[str, Any]) -> tuple[str, str, 
             f"Total: {payload.get('pedido_total') or payload.get('order_total')}",
             f"Forma de pagamento: {payload.get('forma_pagamento') or payload.get('payment_method')}",
             f"Status do pagamento: {payload.get('status_pagamento') or payload.get('payment_status')}",
-            f"Pagamento Mercado Pago: {payload.get('mp_payment_id') or 'nao informado'}",
+            f"Pagamento Mercado Pago: {payload.get('mp_payment_id') or 'não informado'}",
             f"Abrir no painel admin: {admin_order_url}",
         ]
     )
