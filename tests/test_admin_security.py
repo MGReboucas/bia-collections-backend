@@ -1918,10 +1918,23 @@ def test_pagamento_pix_traduz_erro_credenciais_live():
 
     message = pagamentos_module._mensagem_erro_mp({
         "message": "Unauthorized use of live credentials",
-    })
+    }, fluxo="pix")
 
     assert "credenciais de producao" in message
     assert "comprador real diferente" in message
+    assert "Unauthorized use of live credentials" in message
+
+
+def test_pagamento_cartao_traduz_erro_credenciais_live_sem_mencionar_pix():
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    message = pagamentos_module._mensagem_erro_mp({
+        "message": "Unauthorized use of live credentials",
+    }, fluxo="cartao")
+
+    assert "pagamento com cartao" in message
+    assert "cartoes de teste" in message
+    assert "gerar PIX" not in message
     assert "Unauthorized use of live credentials" in message
 
 
@@ -2104,6 +2117,71 @@ def test_pagamento_cartao_sem_issuer_nao_bloqueia_checkout(client, monkeypatch):
     assert response.json()["status"] == "aprovado"
     assert len(creates) == 1
     assert "issuer_id" not in creates[0]
+
+
+def test_pagamento_cartao_erro_credenciais_live_retorna_mensagem_de_cartao(client, monkeypatch):
+    create_user("cliente-cartao-credencial-live", "cliente-cartao-credencial-live@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-cartao-credencial-live").one()
+        db.add(
+            Pedido(
+                numero="0000008",
+                usuario_id=user.id,
+                status="Aguardando pagamento",
+                forma_pagamento="cartao",
+                subtotal=100.0,
+                valor_frete=0.0,
+                total=100.0,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+
+    class FakePaymentResource:
+        def create(self, payload, options=None):
+            return {
+                "status": 401,
+                "response": {
+                    "message": "Unauthorized use of live credentials",
+                    "error": "unauthorized",
+                    "status": 401,
+                },
+            }
+
+    class FakeSDK:
+        def __init__(self, token):
+            assert token == "token"
+
+        def payment(self):
+            return FakePaymentResource()
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+
+    response = client.post(
+        "/api/v1/pagamentos/cartao/0000008",
+        json={
+            "token": "card-token",
+            "payment_method_id": "visa",
+            "installments": 1,
+            "transaction_amount": 100.0,
+            "payer": {
+                "email": "pagador@example.com",
+                "identification": {"type": "CPF", "number": "12345678909"},
+            },
+        },
+        headers=auth_headers("cliente-cartao-credencial-live"),
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "pagamento com cartao" in detail
+    assert "cartoes de teste" in detail
+    assert "gerar PIX" not in detail
 
 
 def test_pagamento_cartao_valor_divergente_retorna_422(client, monkeypatch):

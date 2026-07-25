@@ -106,7 +106,7 @@ def _validar_valor_pagamento(valor_enviado: float, valor_pedido: float) -> None:
         )
 
 
-def _mensagem_erro_mp(response: dict) -> str:
+def _mensagem_erro_mp(response: dict, fluxo: str = "pagamento") -> str:
     if not isinstance(response, dict):
         return "Erro desconhecido"
     message = response.get("message") or response.get("error") or response.get("status_detail")
@@ -119,10 +119,24 @@ def _mensagem_erro_mp(response: dict) -> str:
             message = str(first)
     message = str(message or "")
     if message == MP_LIVE_CREDENTIALS_ERROR:
+        if fluxo == "pix":
+            return (
+                "Mercado Pago recusou as credenciais de producao para gerar PIX. "
+                "Confira se a conta vendedora tem Pix/chave Pix liberados e teste com "
+                "um comprador real diferente da conta Mercado Pago vendedora. "
+                f"Mensagem original: {MP_LIVE_CREDENTIALS_ERROR}"
+            )
+        if fluxo == "cartao":
+            return (
+                "Mercado Pago recusou as credenciais de producao para pagamento com cartao. "
+                "Em producao, use um comprador real diferente da conta Mercado Pago vendedora. "
+                "Para testes, use credenciais e cartoes de teste do Mercado Pago. "
+                f"Mensagem original: {MP_LIVE_CREDENTIALS_ERROR}"
+            )
         return (
-            "Mercado Pago recusou as credenciais de producao para gerar PIX. "
-            "Confira se a conta vendedora tem Pix/chave Pix liberados e teste com "
-            "um comprador real diferente da conta Mercado Pago vendedora. "
+            "Mercado Pago recusou as credenciais de producao. "
+            "Confira se as credenciais pertencem a uma aplicacao ativa e se "
+            "o ambiente de teste/producao esta correto. "
             f"Mensagem original: {MP_LIVE_CREDENTIALS_ERROR}"
         )
     return message or "Erro desconhecido"
@@ -153,7 +167,7 @@ def _criar_order_pix_mp(payload: dict, idempotency_key: str) -> tuple[int, dict]
         logger.warning(
             "Mercado Pago recusou order PIX: status=%s message=%s",
             response.status_code,
-            _mensagem_erro_mp(body),
+            _mensagem_erro_mp(body, fluxo="pix"),
         )
     return response.status_code, body
 
@@ -641,7 +655,7 @@ def criar_pagamento_pix(
     if result_status not in (200, 201):
         raise HTTPException(
             status_code=502,
-            detail=f"Erro ao gerar PIX: {_mensagem_erro_mp(response)}",
+            detail=f"Erro ao gerar PIX: {_mensagem_erro_mp(response, fluxo='pix')}",
         )
 
     pix_data = _extrair_pix_order(response)
@@ -776,7 +790,7 @@ def criar_pagamento_cartao(
     mp_http_status = result.get("status")
 
     if mp_http_status not in (200, 201):
-        mensagem = _mensagem_erro_mp(response)
+        mensagem = _mensagem_erro_mp(response, fluxo="cartao")
 
         logger.error(
             "Mercado Pago recusou pagamento: "
@@ -788,7 +802,7 @@ def criar_pagamento_cartao(
         )
 
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Mercado Pago recusou o pagamento: {mensagem}",
         )
 
