@@ -3058,6 +3058,31 @@ def test_pedido_criado_usa_template_admin_e_registra_log_renderizado(client, mon
     assert "Se você não solicitou esta mensagem" in log.html_snapshot
 
 
+def test_todos_templates_de_pedido_e_pos_venda_incluem_resumo_do_pedido():
+    seeds_module = importlib.import_module("app.modules.email.seeds")
+
+    customer_templates = [
+        template
+        for template in seeds_module.EMAIL_TEMPLATE_SEEDS
+        if template["category"] in seeds_module.ORDER_SUMMARY_CATEGORIES
+        and "order_number" in template["variables_schema"]
+    ]
+    admin_templates = [
+        template
+        for template in seeds_module.ADMIN_EMAIL_TEMPLATE_SEEDS
+        if template["evento"] in seeds_module.ORDER_SUMMARY_ADMIN_EVENTS
+    ]
+
+    assert customer_templates
+    assert admin_templates
+    for template in customer_templates:
+        assert "{{order_items_html}}" in template["html_template"], template["slug"]
+        assert "{{order_total}}" in template["html_template"], template["slug"]
+    for template in admin_templates:
+        assert "{{pedido_itens_html}}" in template["html_template"], template["slug"]
+        assert "{{pedido_total}}" in template["html_template"], template["slug"]
+
+
 def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     sent, _ = patch_service_email_provider(monkeypatch)

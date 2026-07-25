@@ -16,6 +16,71 @@ def _schema(*variables: str) -> str:
 
 
 PREMIUM_TEMPLATE_MARKER = 'data-bia-template-style="premium-v2"'
+ORDER_SUMMARY_TEMPLATE_MARKER = 'data-bia-order-summary="true"'
+
+ORDER_SUMMARY_CATEGORIES = {"pedidos", "pagamentos", "financeiro", "avaliacoes"}
+ORDER_SUMMARY_ADMIN_EVENTS = {
+    "pedido_criado",
+    "pagamento_aprovado",
+    "pagamento_recusado",
+    "pagamento_pendente",
+    "pagamento_expirado",
+    "pedido_preparando",
+    "pedido_enviado",
+    "pedido_entregue",
+    "pedido_cancelado",
+    "reembolso_aprovado",
+    "reembolso_processado",
+    "nota_fiscal_recibo",
+    "troca_devolucao_recebida",
+    "troca_devolucao_aprovada",
+    "troca_devolucao_recusada",
+    "avaliacao_pedido",
+}
+
+
+def _order_summary_block(*, admin: bool) -> str:
+    items_variable = "pedido_itens_html" if admin else "order_items_html"
+    total_variable = "pedido_total" if admin else "order_total"
+    return (
+        f'<div {ORDER_SUMMARY_TEMPLATE_MARKER}>'
+        f"{{{{{items_variable}}}}}"
+        '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" '
+        'style="border-collapse: collapse; margin: 0 0 22px;">'
+        "<tr>"
+        '<td style="padding: 12px 0; border-top: 1px solid #eee8df; font-family: Arial, Helvetica, sans-serif; '
+        'font-size: 13px; line-height: 20px; color: #6f675f;">Total do pedido</td>'
+        '<td align="right" style="padding: 12px 0; border-top: 1px solid #eee8df; '
+        'font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 20px; '
+        f'color: #111111;"><strong>{{{{{total_variable}}}}}</strong></td>'
+        "</tr>"
+        "</table>"
+        "</div>"
+    )
+
+
+def _with_order_summary(
+    body_html: str,
+    text_template: str,
+    variables: tuple[str, ...],
+    *,
+    admin: bool,
+) -> tuple[str, str, tuple[str, ...]]:
+    items_variable = "pedido_itens_html" if admin else "order_items_html"
+    items_text_variable = "pedido_itens_text" if admin else "order_items_text"
+    total_variable = "pedido_total" if admin else "order_total"
+
+    if f"{{{{{items_variable}}}}}" not in body_html:
+        body_html = f"{body_html}{_order_summary_block(admin=admin)}"
+    if f"{{{{{items_text_variable}}}}}" not in text_template:
+        text_template = (
+            f"{text_template.rstrip()} Itens: {{{{{items_text_variable}}}}}. "
+            f"Total do pedido: {{{{{total_variable}}}}}."
+        )
+
+    required = (items_variable, items_text_variable, total_variable)
+    variables = variables + tuple(variable for variable in required if variable not in variables)
+    return body_html, text_template, variables
 
 
 _PORTUGUESE_COPY_REPLACEMENTS = {
@@ -230,6 +295,13 @@ def _template(
     footer_cta_label: str | None = None,
     footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
+    if category in ORDER_SUMMARY_CATEGORIES and "order_number" in variables:
+        body_html, text_template, variables = _with_order_summary(
+            body_html,
+            text_template,
+            variables,
+            admin=False,
+        )
     name = _review_portuguese_copy(name)
     subject = _review_portuguese_copy(subject)
     preheader = _review_portuguese_copy(preheader)
@@ -285,6 +357,13 @@ def _admin_template(
     footer_cta_label: str | None = None,
     footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
+    if evento in ORDER_SUMMARY_ADMIN_EVENTS:
+        body_html, text_template, variables = _with_order_summary(
+            body_html,
+            text_template,
+            variables,
+            admin=True,
+        )
     nome = _review_portuguese_copy(nome)
     assunto = _review_portuguese_copy(assunto)
     preheader = _review_portuguese_copy(preheader)
@@ -595,6 +674,34 @@ def _refresh_premium_template_if_seeded(template: EmailTemplate, data: dict[str,
     updated_at = getattr(template, "updated_at", None)
     if created_at and updated_at and updated_at != created_at:
         # Templates edited through the admin keep their custom content.
+        return
+
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _refresh_order_summary_template_if_missing(template: EmailTemplate, data: dict[str, Any]) -> None:
+    seeded_html = str(data.get("html") or data.get("html_template") or "")
+    if (
+        ORDER_SUMMARY_TEMPLATE_MARKER not in seeded_html
+        and "order_items_html" not in seeded_html
+        and "pedido_itens_html" not in seeded_html
+    ):
+        return
+
+    current_html = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in ("html", "html_template")
+    )
+    if "order_items_html" in current_html or "pedido_itens_html" in current_html:
+        return
+
+    created_at = getattr(template, "created_at", None)
+    updated_at = getattr(template, "updated_at", None)
+    if created_at and updated_at and updated_at != created_at:
+        # Never replace content explicitly customized through the admin.
         return
 
     for key, value in data.items():
@@ -1894,6 +2001,7 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_payment_refused_template_if_old(template, data)
                 _refresh_payment_pending_template_if_old(template, data)
                 _refresh_payment_expired_template_if_old(template, data)
+                _refresh_order_summary_template_if_missing(template, data)
                 _refresh_premium_template_if_seeded(template, data)
                 _review_existing_template_copy(template)
             templates_by_slug[data["slug"]] = template
@@ -1907,6 +2015,7 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_payment_refused_template_if_old(template, data)
                 _refresh_payment_pending_template_if_old(template, data)
                 _refresh_payment_expired_template_if_old(template, data)
+                _refresh_order_summary_template_if_missing(template, data)
                 _refresh_premium_template_if_seeded(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 _review_existing_template_copy(template)
