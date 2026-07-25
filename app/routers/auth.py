@@ -199,14 +199,6 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.commit()
     db.refresh(user)
     
-    try:
-        trigger_welcome_email_event(db, user)
-    except Exception:
-        logger.exception(
-            "Falha ao disparar email de boas-vindas para %s",
-            _email_mascarado(user.email),
-    )
-
     challenge = create_two_factor_challenge(db, user)
     _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Conta criada. Codigo enviado por e-mail.")
@@ -218,6 +210,14 @@ def verificar_2fa(data: VerifyTwoFactorRequest, response: Response, db: Session 
         user = verify_two_factor_code(db, data.two_factor_token, data.codigo)
     except TwoFactorError as error:
         _raise_two_factor_error(error)
+
+    try:
+        trigger_welcome_email_event(db, user)
+    except Exception:
+        logger.exception(
+            "Falha ao disparar email de boas-vindas para %s",
+            _email_mascarado(user.email),
+        )
 
     access_token, csrf_token = issue_auth_cookies(response, user)
     return _token_response(user, access_token=access_token, csrf_token=csrf_token)
