@@ -42,13 +42,17 @@ MP_ORDERS_URL = "https://api.mercadopago.com/v1/orders"
 MP_LIVE_CREDENTIALS_ERROR = "Unauthorized use of live credentials"
 
 
-def _get_sdk() -> mercadopago.SDK:
+def _require_mp_access_token() -> str:
     if not settings.MP_ACCESS_TOKEN:
         raise HTTPException(
             status_code=503,
             detail="Pagamentos ainda nao configurados. Contate o suporte.",
         )
-    return mercadopago.SDK(settings.MP_ACCESS_TOKEN)
+    return settings.MP_ACCESS_TOKEN.strip()
+
+
+def _get_sdk() -> mercadopago.SDK:
+    return mercadopago.SDK(_require_mp_access_token())
 
 
 def _notification_url() -> str | None:
@@ -128,9 +132,9 @@ def _mensagem_erro_mp(response: dict, fluxo: str = "pagamento") -> str:
             )
         if fluxo == "cartao":
             return (
-                "Mercado Pago recusou as credenciais de producao para pagamento com cartao. "
-                "Em producao, use um comprador real diferente da conta Mercado Pago vendedora. "
-                "Para testes, use credenciais e cartoes de teste do Mercado Pago. "
+                "Mercado Pago recusou a credencial ao criar a order de cartao. "
+                "Confira se o Access Token pertence a aplicacao Checkout Transparente via Orders "
+                "e ao mesmo ambiente usado para gerar o token do cartao. "
                 f"Mensagem original: {MP_LIVE_CREDENTIALS_ERROR}"
             )
         return (
@@ -142,21 +146,29 @@ def _mensagem_erro_mp(response: dict, fluxo: str = "pagamento") -> str:
     return message or "Erro desconhecido"
 
 
-def _criar_order_pix_mp(payload: dict, idempotency_key: str) -> tuple[int, dict]:
+def _criar_order_mp(
+    payload: dict,
+    idempotency_key: str,
+    *,
+    fluxo: str,
+) -> tuple[int, dict]:
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
-        "Authorization": f"Bearer {settings.MP_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {_require_mp_access_token()}",
         "X-Idempotency-Key": idempotency_key,
     }
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.post(MP_ORDERS_URL, headers=headers, json=payload)
     except httpx.HTTPError:
-        logger.exception("Erro de comunicacao ao criar order PIX no Mercado Pago")
+        logger.exception(
+            "Erro de comunicacao ao criar order %s no Mercado Pago",
+            fluxo,
+        )
         raise HTTPException(
             status_code=502,
-            detail="Erro de comunicacao com o Mercado Pago ao gerar PIX.",
+            detail=f"Erro de comunicacao com o Mercado Pago ao processar {fluxo}.",
         )
 
     try:
@@ -165,11 +177,21 @@ def _criar_order_pix_mp(payload: dict, idempotency_key: str) -> tuple[int, dict]
         body = {}
     if response.status_code not in (200, 201):
         logger.warning(
-            "Mercado Pago recusou order PIX: status=%s message=%s",
+            "Mercado Pago recusou order %s: status=%s message=%s request_id=%s",
+            fluxo,
             response.status_code,
-            _mensagem_erro_mp(body, fluxo="pix"),
+            _mensagem_erro_mp(body, fluxo=fluxo),
+            response.headers.get("x-request-id") or response.headers.get("x-correlation-id") or "",
         )
     return response.status_code, body
+
+
+def _criar_order_pix_mp(payload: dict, idempotency_key: str) -> tuple[int, dict]:
+    return _criar_order_mp(payload, idempotency_key, fluxo="pix")
+
+
+def _criar_order_cartao_mp(payload: dict, idempotency_key: str) -> tuple[int, dict]:
+    return _criar_order_mp(payload, idempotency_key, fluxo="cartao")
 
 
 def _consultar_order_mp(order_id: str) -> tuple[int, dict]:
@@ -234,7 +256,7 @@ def _buscar_order_mp_por_referencia(external_reference: str, criado_em: datetime
     return data[0] if data else None
 
 
-def _extrair_pix_order(response: dict) -> dict:
+def _extrair_order(response: dict) -> dict:
     payments = response.get("transactions", {}).get("payments") or []
     payment = payments[0] if payments else {}
     payment_method = payment.get("payment_method") or {}
@@ -242,6 +264,10 @@ def _extrair_pix_order(response: dict) -> dict:
         "order_id": str(response.get("id") or ""),
         "payment_id": str(payment.get("id") or response.get("id") or ""),
         "status": payment.get("status") or response.get("status") or "pending",
+        "status_detail": payment.get("status_detail") or response.get("status_detail") or "",
+        "payment_method_id": payment_method.get("id") or "",
+        "payment_method_type": payment_method.get("type") or "",
+        "amount": payment.get("amount") or response.get("total_amount") or 0.0,
         "qr_code": payment_method.get("qr_code") or "",
         "qr_code_base64": (
             payment_method.get("qr_code_base64")
@@ -252,20 +278,25 @@ def _extrair_pix_order(response: dict) -> dict:
     }
 
 
+def _extrair_pix_order(response: dict) -> dict:
+    return _extrair_order(response)
+
+
 def _extrair_payment_from_order(response: dict) -> dict:
-    pix_data = _extrair_pix_order(response)
+    order_data = _extrair_order(response)
+    payment_flow = "pix" if order_data["payment_method_id"] == "pix" else "cartao"
     return {
-        "order_id": pix_data["order_id"],
-        "payment_id": pix_data["payment_id"],
-        "status": pix_data["status"],
-        "mp_status": pix_data["status"],
-        "status_detail": response.get("status_detail") or "",
+        "order_id": order_data["order_id"],
+        "payment_id": order_data["payment_id"],
+        "status": order_data["status"],
+        "mp_status": order_data["status"],
+        "status_detail": order_data["status_detail"],
         "external_reference": response.get("external_reference") or "",
-        "transaction_amount": response.get("total_amount") or 0.0,
-        "payment_method_id": "pix",
+        "transaction_amount": order_data["amount"],
+        "payment_method_id": order_data["payment_method_id"],
         "metadata": {
             "pedido_numero": response.get("external_reference") or "",
-            "payment_flow": "pix",
+            "payment_flow": payment_flow,
         },
     }
 
@@ -736,78 +767,68 @@ def criar_pagamento_cartao(
         pedido.total,
     )
 
-    sdk = _get_sdk()
+    _require_mp_access_token()
     idempotency_key = _idempotency_key(
         numero_pedido,
         "cartao",
     )
+    valor = _formatar_valor_mp(pedido.total)
 
-    payment_data = {
-        "transaction_amount": float(pedido.total),
-        "token": data.token,
+    order_data = {
+        "type": "online",
+        "processing_mode": "automatic",
+        "capture_mode": "automatic",
+        "total_amount": valor,
+        "external_reference": pedido.numero,
         "description": f"Bia Collections - Pedido {pedido.numero}",
-        "installments": data.installments,
-        "payment_method_id": data.payment_method_id,
         "payer": {
             "email": data.payer.email,
             "identification": (
                 data.payer.identification.model_dump()
             ),
         },
-        "external_reference": pedido.numero,
-        "metadata": {
-            "pedido_numero": pedido.numero,
-            "payment_flow": "cartao",
+        "transactions": {
+            "payments": [
+                {
+                    "amount": valor,
+                    "payment_method": {
+                        "id": data.payment_method_id,
+                        "type": "credit_card",
+                        "token": data.token,
+                        "installments": data.installments,
+                    },
+                }
+            ]
         },
     }
 
-    if data.issuer_id:
-        payment_data["issuer_id"] = data.issuer_id
+    mp_http_status, response = _criar_order_cartao_mp(order_data, idempotency_key)
+    order_result = _extrair_order(response)
+    transacao_criada = bool(order_result["order_id"] and order_result["payment_id"])
 
-    notification_url = _notification_url()
+    if mp_http_status not in (200, 201) and not (
+        mp_http_status == 402 and transacao_criada
+    ):
+        mensagem = _mensagem_erro_mp(response, fluxo="cartao")
 
-    if notification_url:
-        payment_data["notification_url"] = notification_url
-
-    try:
-        result = _criar_recurso_mp(
-            sdk.payment(),
-            payment_data,
-            idempotency_key,
-        )
-    except Exception:
-        logger.exception(
-            "Erro inesperado na chamada ao Mercado Pago. pedido=%s",
+        logger.error(
+            "Mercado Pago recusou order de cartao: "
+            "pedido=%s status_http=%s message=%s error=%s cause=%s",
             numero_pedido,
+            mp_http_status,
+            mensagem,
+            response.get("error"),
+            response.get("cause") or response.get("errors"),
         )
 
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Falha de comunicacao com o Mercado Pago.",
-        )
-
-    response = result.get("response") or {}
-    mp_http_status = result.get("status")
-
-    if mp_http_status not in (200, 201):
-        mensagem = _mensagem_erro_mp(response, fluxo="cartao")
-
-        logger.error(
-            "Mercado Pago recusou pagamento: "
-            "pedido=%s status_http=%s message=%s response=%s",
-            numero_pedido,
-            mp_http_status,
-            mensagem,
-            response,
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Mercado Pago recusou o pagamento: {mensagem}",
         )
 
-    payment_id = str(response.get("id") or "")
-    mp_status = str(response.get("status") or "pending")
+    payment_id = order_result["payment_id"]
+    order_id = order_result["order_id"]
+    mp_status = str(order_result["status"] or "pending")
 
     status_pagamento = MP_TO_PAYMENT_STATUS.get(
         mp_status,
@@ -831,6 +852,7 @@ def criar_pagamento_cartao(
         valor=float(pedido.total),
         idempotency_key=idempotency_key,
         mp_payment_id=payment_id,
+        mp_order_id=order_id,
         status=status_pagamento,
         mp_status=mp_status,
     )
@@ -854,10 +876,10 @@ def criar_pagamento_cartao(
         payment_id=payment_id,
         status=status_pagamento,
         mp_status=mp_status,
-        status_detail=response.get("status_detail"),
+        status_detail=order_result["status_detail"],
         status_pedido=pedido.status,
         payment_method_id=str(
-            response.get("payment_method_id")
+            order_result["payment_method_id"]
             or data.payment_method_id
         ),
     )

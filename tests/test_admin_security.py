@@ -1932,8 +1932,8 @@ def test_pagamento_cartao_traduz_erro_credenciais_live_sem_mencionar_pix():
         "message": "Unauthorized use of live credentials",
     }, fluxo="cartao")
 
-    assert "pagamento com cartao" in message
-    assert "cartoes de teste" in message
+    assert "order de cartao" in message
+    assert "Checkout Transparente via Orders" in message
     assert "gerar PIX" not in message
     assert "Unauthorized use of live credentials" in message
 
@@ -1960,30 +1960,35 @@ def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkey
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
     creates = []
 
-    class FakePaymentResource:
-        def create(self, payload, options=None):
-            creates.append({"payload": payload, "options": options})
-            return {
-                "status": 201,
-                "response": {
-                    "id": "pay_card_approved",
-                    "status": "approved",
-                    "status_detail": "accredited",
-                    "payment_method_id": "visa",
-                },
-            }
-
-    class FakeSDK:
-        def __init__(self, token):
-            assert token == "token"
-
-        def payment(self):
-            return FakePaymentResource()
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        creates.append({"payload": payload, "idempotency_key": idempotency_key})
+        return 201, {
+            "id": "ord_card_approved",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "0000003",
+            "total_amount": "112.50",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_card_approved",
+                        "amount": "112.50",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {
+                            "id": "visa",
+                            "type": "credit_card",
+                            "installments": 2,
+                        },
+                    }
+                ]
+            },
+        }
 
     email_events = []
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
     monkeypatch.setattr(pagamentos_module.settings, "MP_NOTIFICATION_URL", "https://api.example.test")
-    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
     monkeypatch.setattr(
         pagamentos_module,
         "trigger_order_email_event",
@@ -2012,23 +2017,28 @@ def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkey
     assert body == {
         "payment_id": "pay_card_approved",
         "status": "aprovado",
-        "mp_status": "approved",
+        "mp_status": "processed",
         "status_detail": "accredited",
         "status_pedido": "Pagamento aprovado",
         "payment_method_id": "visa",
     }
     assert len(creates) == 1
     mp_payload = creates[0]["payload"]
-    assert mp_payload["transaction_amount"] == 112.5
-    assert mp_payload["token"] == "card-token"
+    assert mp_payload["type"] == "online"
+    assert mp_payload["processing_mode"] == "automatic"
+    assert mp_payload["capture_mode"] == "automatic"
+    assert mp_payload["total_amount"] == "112.50"
     assert mp_payload["description"] == "Bia Collections - Pedido 0000003"
-    assert mp_payload["installments"] == 2
-    assert mp_payload["payment_method_id"] == "visa"
-    assert mp_payload["issuer_id"] == "25"
     assert mp_payload["payer"] == payload["payer"]
     assert mp_payload["external_reference"] == "0000003"
-    assert mp_payload["metadata"] == {"pedido_numero": "0000003", "payment_flow": "cartao"}
-    assert mp_payload["notification_url"] == "https://api.example.test/api/v1/pagamentos/webhook"
+    payment_method = mp_payload["transactions"]["payments"][0]["payment_method"]
+    assert mp_payload["transactions"]["payments"][0]["amount"] == "112.50"
+    assert payment_method == {
+        "id": "visa",
+        "type": "credit_card",
+        "token": "card-token",
+        "installments": 2,
+    }
 
     db = SessionLocal()
     try:
@@ -2038,8 +2048,9 @@ def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkey
         assert pagamento.tipo == "cartao"
         assert pagamento.valor == 112.5
         assert pagamento.status == "aprovado"
-        assert pagamento.mp_status == "approved"
+        assert pagamento.mp_status == "processed"
         assert pagamento.mp_payment_id == "pay_card_approved"
+        assert pagamento.mp_order_id == "ord_card_approved"
         assert pagamento.idempotency_key.startswith("bia-cartao-0000003-")
     finally:
         db.close()
@@ -2069,28 +2080,29 @@ def test_pagamento_cartao_sem_issuer_nao_bloqueia_checkout(client, monkeypatch):
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
     creates = []
 
-    class FakePaymentResource:
-        def create(self, payload, options=None):
-            creates.append(payload)
-            return {
-                "status": 201,
-                "response": {
-                    "id": "pay_card_no_issuer",
-                    "status": "approved",
-                    "status_detail": "accredited",
-                    "payment_method_id": payload["payment_method_id"],
-                },
-            }
-
-    class FakeSDK:
-        def __init__(self, token):
-            assert token == "token"
-
-        def payment(self):
-            return FakePaymentResource()
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        creates.append(payload)
+        return 201, {
+            "id": "ord_card_no_issuer",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "0000007",
+            "total_amount": "100.00",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_card_no_issuer",
+                        "amount": "100.00",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {"id": "visa", "type": "credit_card"},
+                    }
+                ]
+            },
+        }
 
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
     monkeypatch.setattr(
         pagamentos_module,
         "trigger_order_email_event",
@@ -2117,6 +2129,7 @@ def test_pagamento_cartao_sem_issuer_nao_bloqueia_checkout(client, monkeypatch):
     assert response.json()["status"] == "aprovado"
     assert len(creates) == 1
     assert "issuer_id" not in creates[0]
+    assert creates[0]["transactions"]["payments"][0]["payment_method"]["id"] == "visa"
 
 
 def test_pagamento_cartao_erro_credenciais_live_retorna_mensagem_de_cartao(client, monkeypatch):
@@ -2141,26 +2154,15 @@ def test_pagamento_cartao_erro_credenciais_live_retorna_mensagem_de_cartao(clien
 
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
 
-    class FakePaymentResource:
-        def create(self, payload, options=None):
-            return {
-                "status": 401,
-                "response": {
-                    "message": "Unauthorized use of live credentials",
-                    "error": "unauthorized",
-                    "status": 401,
-                },
-            }
-
-    class FakeSDK:
-        def __init__(self, token):
-            assert token == "token"
-
-        def payment(self):
-            return FakePaymentResource()
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        return 401, {
+            "message": "Unauthorized use of live credentials",
+            "error": "unauthorized",
+            "status": 401,
+        }
 
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
 
     response = client.post(
         "/api/v1/pagamentos/cartao/0000008",
@@ -2177,10 +2179,10 @@ def test_pagamento_cartao_erro_credenciais_live_retorna_mensagem_de_cartao(clien
         headers=auth_headers("cliente-cartao-credencial-live"),
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 502
     detail = response.json()["detail"]
-    assert "pagamento com cartao" in detail
-    assert "cartoes de teste" in detail
+    assert "order de cartao" in detail
+    assert "Checkout Transparente via Orders" in detail
     assert "gerar PIX" not in detail
 
 
@@ -2250,30 +2252,31 @@ def test_pagamento_cartao_recusado_permite_nova_tentativa(client, monkeypatch):
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
     create_count = 0
 
-    class FakePaymentResource:
-        def create(self, payload, options=None):
-            nonlocal create_count
-            create_count += 1
-            return {
-                "status": 201,
-                "response": {
-                    "id": f"pay_card_rejected_{create_count}",
-                    "status": "rejected",
-                    "status_detail": "cc_rejected_other_reason",
-                    "payment_method_id": payload["payment_method_id"],
-                },
-            }
-
-    class FakeSDK:
-        def __init__(self, token):
-            assert token == "token"
-
-        def payment(self):
-            return FakePaymentResource()
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        nonlocal create_count
+        create_count += 1
+        return 402, {
+            "id": f"ord_card_rejected_{create_count}",
+            "status": "failed",
+            "status_detail": "cc_rejected_other_reason",
+            "external_reference": "0000005",
+            "total_amount": "70.00",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": f"pay_card_rejected_{create_count}",
+                        "amount": "70.00",
+                        "status": "failed",
+                        "status_detail": "cc_rejected_other_reason",
+                        "payment_method": {"id": "master", "type": "credit_card"},
+                    }
+                ]
+            },
+        }
 
     email_events = []
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
     monkeypatch.setattr(
         pagamentos_module,
         "trigger_order_email_event",
@@ -3101,11 +3104,32 @@ def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(clie
         def payment(self):
             return FakeCardPayment()
 
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        return 201, {
+            "id": "ord_card_email",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "EMAILPAY1",
+            "total_amount": "112.50",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_card_email",
+                        "amount": "112.50",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {"id": "visa", "type": "credit_card"},
+                    }
+                ]
+            },
+        }
+
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
     monkeypatch.setattr(pagamentos_module.settings, "MP_WEBHOOK_SECRET", "")
     monkeypatch.setattr(pagamentos_module.settings, "ADMIN_ORDER_NOTIFICATION_EMAIL", "dona@example.com")
     monkeypatch.setattr(pagamentos_module.settings, "FRONTEND_URL", "https://loja.example.test")
     monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
 
     card_response = client.post(
         "/api/v1/pagamentos/cartao/EMAILPAY1",
@@ -3359,28 +3383,29 @@ def test_pagamento_aprovado_sem_email_admin_configurado_usa_master_admin(client,
 
     pagamentos_module = importlib.import_module("app.routers.pagamentos")
 
-    class FakeCardPayment:
-        def create(self, payload, options=None):
-            return {
-                "status": 201,
-                "response": {
-                    "id": "pay_card_fallback",
-                    "status": "approved",
-                    "status_detail": "accredited",
-                    "payment_method_id": payload["payment_method_id"],
-                },
-            }
-
-    class FakeSDK:
-        def __init__(self, access_token):
-            assert access_token == "token"
-
-        def payment(self):
-            return FakeCardPayment()
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        return 201, {
+            "id": "ord_card_fallback",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "EMAILFALL1",
+            "total_amount": "88.00",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_card_fallback",
+                        "amount": "88.00",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {"id": "visa", "type": "credit_card"},
+                    }
+                ]
+            },
+        }
 
     monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
     monkeypatch.setattr(pagamentos_module.settings, "ADMIN_ORDER_NOTIFICATION_EMAIL", "")
-    monkeypatch.setattr(pagamentos_module.mercadopago, "SDK", FakeSDK)
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
 
     response = client.post(
         "/api/v1/pagamentos/cartao/EMAILFALL1",
