@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional
 from urllib.parse import urlsplit
@@ -48,13 +49,15 @@ from app.services.avaliacao_service import (
     avaliacao_response,
     delete_avaliacao_files,
 )
-from app.modules.email.service import trigger_order_email_event
+from app.modules.email.service import trigger_new_coupon_campaign, trigger_order_email_event
+from app.modules.email.marketing import notify_product_back_in_stock
 
 router = APIRouter(
     prefix="/admin",
     tags=["admin"],
     dependencies=[Depends(get_current_master_admin_user)],
 )
+logger = logging.getLogger(__name__)
 
 MAX_PRODUCT_IMAGES = 10
 PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
@@ -1232,6 +1235,7 @@ async def atualizar_produto(
     )
     if not produto:
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
+    estoque_anterior = produto.estoque or 0
 
     image_files = _uploaded_files(imagens) or _uploaded_files([imagem] if imagem else None)
     legacy_image_metadata = _image_metadata(
@@ -1302,6 +1306,11 @@ async def atualizar_produto(
 
     db.commit()
     db.refresh(produto)
+    if estoque_anterior <= 0 and (produto.estoque or 0) > 0:
+        try:
+            notify_product_back_in_stock(db, produto)
+        except Exception:
+            logger.exception("Falha ao avisar reposicao do produto %s", produto.id)
     if should_sync_images:
         _delete_replaced_product_images(old_image_urls, final_image_urls)
     return _produto_response(produto)
@@ -1368,7 +1377,7 @@ def _cupom_response(cupom: Cupom) -> dict:
 def criar_cupom_admin(
     data: CupomPayload,
     db: Session = Depends(get_db),
-    _: Usuario = Depends(get_current_admin),
+    current_admin: Usuario = Depends(get_current_admin),
 ):
     data.validar_valor_por_tipo()
     exists = db.query(Cupom).filter(Cupom.codigo == data.codigo).first()
@@ -1389,6 +1398,10 @@ def criar_cupom_admin(
     db.add(cupom)
     db.commit()
     db.refresh(cupom)
+    try:
+        trigger_new_coupon_campaign(db, cupom, created_by_id=current_admin.id)
+    except Exception:
+        logger.exception("Falha ao enfileirar campanha do cupom %s", cupom.codigo)
     return _cupom_response(cupom)
 
 

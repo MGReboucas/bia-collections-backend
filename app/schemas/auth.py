@@ -26,6 +26,7 @@ class CadastroRequest(BaseModel):
     email: str
     senha: str
     confirma_senha: str
+    aceita_email_marketing: bool = False
 
     @field_validator("username")
     @classmethod

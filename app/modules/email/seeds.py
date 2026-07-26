@@ -530,6 +530,35 @@ SECURITY_CONTENT_V4_MARKERS = {
     "admin-default-confirmacao-alteracao-email": ("Use o codigo para confirmar",),
     "admin-default-novo-acesso": ("Novo acesso a sua conta",),
 }
+MARKETING_CONTENT_V5_SLUGS = {
+    "user-registered",
+    "admin-default-boas-vindas",
+    "abandoned-cart-1h",
+    "product-back-in-stock",
+    "coupon-expiring",
+    "admin-default-carrinho-abandonado",
+}
+
+
+def _refresh_marketing_content_v5(template: EmailTemplate, data: dict[str, Any]) -> None:
+    if data["slug"] not in MARKETING_CONTENT_V5_SLUGS:
+        return
+    content = " ".join(
+        str(getattr(template, field, "") or "")
+        for field in ("subject", "preheader", "html_template", "text_template")
+    )
+    legacy_markers = {
+        "user-registered": ("sua conta na Bia Collections foi criada com sucesso",),
+        "admin-default-boas-vindas": ("Voce ja pode acompanhar pedidos", "Você já pode acompanhar pedidos"),
+        "abandoned-cart-1h": ("Seu carrinho na Bia Collections ainda",),
+        "product-back-in-stock": ("Corra para garantir o seu antes que acabe de novo",),
+        "coupon-expiring": ("Use antes de {{coupon_expires_at}} para aproveitar",),
+        "admin-default-carrinho-abandonado": ("Finalize sua compra antes que algum produto acabe",),
+    }
+    if not any(marker in content for marker in legacy_markers[data["slug"]]):
+        return
+    for field, value in data.items():
+        setattr(template, field, value)
 
 
 def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
@@ -814,14 +843,22 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         body_html=(
             "<p style=\"margin: 0 0 16px; text-align: center;\">"
             "Que bom ter voce por aqui. Agora voce pode acompanhar pedidos, salvar enderecos e receber novidades escolhidas com cuidado.</p>"
+            "<div style=\"margin: 20px 0; padding: 18px; border: 1px solid #e7d2bb; text-align: center; background: #fbfaf8;\">"
+            "<p style=\"margin: 0 0 8px; font-size: 13px; color: #6f675f;\">Seu presente de boas-vindas</p>"
+            "<p style=\"margin: 0 0 8px; font-size: 24px; letter-spacing: 3px;\"><strong>{{welcome_coupon_code}}</strong></p>"
+            "<p style=\"margin: 0;\">{{welcome_coupon_value}} de desconto para usar no checkout.</p>"
+            "</div>"
             "<p style=\"margin: 0; text-align: center;\">"
             "<a href=\"{{store_home_url}}\" style=\"color: #111111; font-weight: bold; text-decoration: underline;\">"
             "Ir para a home da Bia Collections</a></p>"
         ),
-        text_template="Ola {{customer_name}}, sua conta na Bia Collections foi criada com sucesso.",
-        variables=("customer_name", "store_url"),
-        cta_label="Ver Instagram",
-        cta_url=BRAND_INSTAGRAM_URL,
+        text_template=(
+            "Olá {{customer_name}}, sua conta na Bia Collections foi criada com sucesso. "
+            "Use o cupom {{welcome_coupon_code}} para ganhar {{welcome_coupon_value}} de desconto no checkout."
+        ),
+        variables=("customer_name", "welcome_coupon_code", "welcome_coupon_value", "welcome_coupon_expires_at", "store_url"),
+        cta_label="Escolher meus favoritos",
+        cta_url="{{store_url}}",
     ),
     _template(
         name="Confirmacao de e-mail",
@@ -1277,15 +1314,66 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         name="Carrinho abandonado 1h",
         slug="abandoned-cart-1h",
         category="carrinho",
-        subject="Voce deixou alguns favoritos na Bia",
-        preheader="Seu carrinho ainda esta esperando por voce.",
-        title="Seu carrinho esta salvo",
-        intro="Ola {{customer_name}}, seus itens continuam no carrinho.",
-        body_html="<p>Finalize sua compra antes que algum produto acabe.</p>",
-        text_template="Seu carrinho na Bia Collections ainda esta salvo.",
-        variables=("customer_name", "store_url"),
-        cta_label="Voltar ao carrinho",
-        cta_url="{{store_url}}/checkout",
+        subject="{{customer_name}}, seus favoritos continuam por aqui",
+        preheader="Guardamos os itens do pedido {{order_number}} para voce.",
+        title="Seu carrinho está salvo",
+        intro="Olá {{customer_name}}, vimos que você deixou algumas escolhas especiais para depois.",
+        body_html=(
+            "{{order_items_html}}"
+            "<p style=\"margin: 0 0 14px;\">Seu pedido <strong>{{order_number}}</strong>, no valor de "
+            "<strong>{{order_total}}</strong>, ainda pode ser concluído.</p>"
+            "<p style=\"margin: 0;\">Volte quando quiser e finalize antes que algum item se esgote.</p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}. Os itens do pedido {{order_number}} ({{order_items_text}}), "
+            "no total de {{order_total}}, continuam esperando por você. Finalize em {{payment_link}}."
+        ),
+        variables=("customer_name", "order_number", "order_total", "order_items_html", "order_items_text", "payment_link", "store_url"),
+        cta_label="Finalizar meu pedido",
+        cta_url="{{payment_link}}",
+    ),
+    _template(
+        name="Carrinho abandonado 24h",
+        slug="abandoned-cart-24h",
+        category="carrinho",
+        subject="Ainda pensando? Suas escolhas continuam esperando",
+        preheader="Retome o pedido {{order_number}} de onde parou.",
+        title="Ainda dá tempo",
+        intro="Olá {{customer_name}}, suas escolhas continuam disponíveis na Bia Collections.",
+        body_html=(
+            "{{order_items_html}}"
+            "<p style=\"margin: 0 0 14px;\">O pedido <strong>{{order_number}}</strong> ainda aguarda a "
+            "finalização do pagamento.</p>"
+            "<p style=\"margin: 0;\">A disponibilidade pode mudar, então aproveite para concluir quando estiver pronta.</p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}. O pedido {{order_number}}, com {{order_items_text}}, ainda aguarda "
+            "pagamento. Retome em {{payment_link}}."
+        ),
+        variables=("customer_name", "order_number", "order_total", "order_items_html", "order_items_text", "payment_link", "store_url"),
+        cta_label="Retomar minha compra",
+        cta_url="{{payment_link}}",
+    ),
+    _template(
+        name="Carrinho abandonado 3 dias",
+        slug="abandoned-cart-3d",
+        category="carrinho",
+        subject="Ultimo lembrete sobre suas escolhas na Bia",
+        preheader="O pedido {{order_number}} ainda pode ser finalizado.",
+        title="Um último lembrete",
+        intro="Olá {{customer_name}}, passamos para lembrar uma última vez das peças que você escolheu.",
+        body_html=(
+            "{{order_items_html}}"
+            "<p style=\"margin: 0 0 14px;\">Seu pedido <strong>{{order_number}}</strong> segue pendente.</p>"
+            "<p style=\"margin: 0;\">Se ainda fizer sentido para você, conclua agora. Caso contrário, nenhuma ação é necessária.</p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}. Este é o último lembrete do pedido {{order_number}} "
+            "({{order_items_text}}). Se desejar, conclua em {{payment_link}}."
+        ),
+        variables=("customer_name", "order_number", "order_total", "order_items_html", "order_items_text", "payment_link", "store_url"),
+        cta_label="Concluir pedido",
+        cta_url="{{payment_link}}",
     ),
     _template(
         name="Produto voltou ao estoque",
@@ -1294,10 +1382,17 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         subject="{{product_name}} voltou ao estoque",
         preheader="O produto que voce queria esta disponivel novamente.",
         title="Voltou ao estoque",
-        intro="{{product_name}} esta disponivel novamente.",
-        body_html="<p>Corra para garantir o seu antes que acabe de novo.</p>",
-        text_template="{{product_name}} voltou ao estoque na Bia Collections.",
-        variables=("product_name", "store_url"),
+        intro="Olá {{customer_name}}, {{product_name}} está disponível novamente.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px;\">Você pediu para saber e nós viemos avisar: "
+            "essa peça voltou para a loja.</p>"
+            "<p style=\"margin: 0;\">A reposição pode ser limitada. Garanta a sua enquanto houver disponibilidade.</p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}. {{product_name}} voltou ao estoque na Bia Collections. "
+            "Veja em {{product_url}}."
+        ),
+        variables=("customer_name", "product_name", "product_url", "store_url"),
         cta_label="Ver produto",
         cta_url="{{product_url}}",
     ),
@@ -1305,13 +1400,20 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         name="Cupom expirando",
         slug="coupon-expiring",
         category="cupons",
-        subject="Seu cupom {{coupon_code}} esta expirando",
+        subject="{{customer_name}}, seu cupom {{coupon_code}} expira em breve",
         preheader="Aproveite seu beneficio antes do prazo terminar.",
         title="Cupom expirando",
-        intro="Seu cupom {{coupon_code}} esta chegando ao fim.",
-        body_html="<p>Use antes de {{coupon_expires_at}} para aproveitar o beneficio.</p>",
-        text_template="Seu cupom {{coupon_code}} expira em {{coupon_expires_at}}.",
-        variables=("coupon_code", "coupon_expires_at", "store_url"),
+        intro="Olá {{customer_name}}, seu benefício de {{coupon_value}} está chegando ao fim.",
+        body_html=(
+            "<p style=\"margin: 0 0 14px; text-align: center;\">Use o código "
+            "<strong style=\"font-size: 20px; letter-spacing: 2px;\">{{coupon_code}}</strong></p>"
+            "<p style=\"margin: 0; text-align: center;\">Válido até <strong>{{coupon_expires_at}}</strong>.</p>"
+        ),
+        text_template=(
+            "Olá {{customer_name}}. Seu cupom {{coupon_code}}, no valor de {{coupon_value}}, "
+            "expira em {{coupon_expires_at}}. Use em {{store_url}}."
+        ),
+        variables=("customer_name", "coupon_code", "coupon_value", "coupon_expires_at", "store_url"),
         cta_label="Usar cupom",
         cta_url="{{store_url}}",
     ),
@@ -1358,14 +1460,19 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         body_html=(
             "<p style=\"margin: 0 0 14px;\">Que bom ter voce por aqui. "
             "Agora voce pode acompanhar pedidos, salvar enderecos e receber novidades escolhidas com cuidado.</p>"
-            "<p style=\"margin: 0;\">Esperamos que cada detalhe da sua experiencia combine com voce.</p>"
+            "<div style=\"margin: 20px 0; padding: 18px; border: 1px solid #e7d2bb; text-align: center; background: #fbfaf8;\">"
+            "<p style=\"margin: 0 0 8px; font-size: 13px; color: #6f675f;\">Seu presente de boas-vindas</p>"
+            "<p style=\"margin: 0 0 8px; font-size: 24px; letter-spacing: 3px;\"><strong>{{cupom_boas_vindas}}</strong></p>"
+            "<p style=\"margin: 0;\">{{valor_cupom_boas_vindas}} de desconto para usar no checkout.</p>"
+            "</div>"
+            "<p style=\"margin: 0;\">Esperamos que cada detalhe da sua experiência combine com você.</p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, sua conta na {{loja_nome}} esta pronta. "
-            "Voce ja pode acompanhar pedidos, salvar enderecos e receber novidades."
+            "Olá {{cliente_nome}}, sua conta na {{loja_nome}} está pronta. "
+            "Use o cupom {{cupom_boas_vindas}} para ganhar {{valor_cupom_boas_vindas}} de desconto no checkout."
         ),
-        variables=("cliente_nome", "loja_nome", "loja_url"),
-        cta_label="Ver loja",
+        variables=("cliente_nome", "loja_nome", "loja_url", "cupom_boas_vindas", "valor_cupom_boas_vindas", "validade_cupom_boas_vindas"),
+        cta_label="Escolher meus favoritos",
         cta_url="{{loja_url}}",
     ),
     _admin_template(
@@ -1988,20 +2095,22 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         nome="Carrinho abandonado",
         slug="admin-default-carrinho-abandonado",
         evento="carrinho_abandonado",
-        assunto="Seu carrinho ainda esta esperando por voce",
-        title="Seu carrinho esta salvo",
-        preheader="Alguns favoritos ficaram no carrinho.",
-        intro="Ola {{cliente_nome}}, seus itens continuam reservados no carrinho.",
+        assunto="{{cliente_nome}}, suas escolhas continuam esperando",
+        title="Seu carrinho está salvo",
+        preheader="Retome o pedido {{pedido_numero}} de onde parou.",
+        intro="Olá {{cliente_nome}}, guardamos as peças que você escolheu.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Finalize sua compra antes que algum produto acabe.</p>"
-            "<p style=\"margin: 0;\">Se tiver um cupom, use no checkout: <strong>{{cupom_codigo}}</strong>.</p>"
+            "{{pedido_itens_html}}"
+            "<p style=\"margin: 0 0 14px;\">O pedido <strong>{{pedido_numero}}</strong>, no valor de "
+            "<strong>{{pedido_total}}</strong>, ainda aguarda a finalização.</p>"
+            "<p style=\"margin: 0;\">Conclua quando estiver pronta, antes que a disponibilidade mude.</p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, seus itens continuam no carrinho da {{loja_nome}}. "
-            "Finalize sua compra: {{carrinho_url}}."
+            "Olá {{cliente_nome}}. O pedido {{pedido_numero}}, com {{pedido_itens_text}}, "
+            "continua aguardando você. Finalize em {{carrinho_url}}."
         ),
-        variables=("cliente_nome", "carrinho_url", "cupom_codigo", "loja_nome", "loja_url"),
-        cta_label="Voltar ao carrinho",
+        variables=("cliente_nome", "pedido_numero", "pedido_total", "pedido_itens_html", "pedido_itens_text", "carrinho_url", "loja_nome", "loja_url"),
+        cta_label="Finalizar meu pedido",
         cta_url="{{carrinho_url}}",
     ),
     _admin_template(
@@ -2183,10 +2292,9 @@ AUTOMATION_SEEDS = [
     ("order_delivered", "order-delivered", 0),
     ("order_cancelled", "order-cancelled", 0),
     ("abandoned_cart_1h", "abandoned-cart-1h", 60),
-    ("abandoned_cart_24h", "abandoned-cart-1h", 1440),
-    ("abandoned_cart_3d", "abandoned-cart-1h", 4320),
+    ("abandoned_cart_24h", "abandoned-cart-24h", 1440),
+    ("abandoned_cart_3d", "abandoned-cart-3d", 4320),
     ("product_back_in_stock", "product-back-in-stock", 0),
-    ("coupon_expiring", "coupon-expiring", 0),
     ("review_request", "review-request", settings.EMAIL_REVIEW_DELAY_MINUTES),
     ("support_ticket_replied", "support-ticket-replied", 0),
 ]
@@ -2213,6 +2321,7 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_order_summary_template_if_missing(template, data)
                 _refresh_order_flow_content_v3(template, data)
                 _refresh_security_content_v4(template, data)
+                _refresh_marketing_content_v5(template, data)
                 _refresh_premium_template_if_seeded(template, data)
                 _review_existing_template_copy(template)
             templates_by_slug[data["slug"]] = template
@@ -2229,6 +2338,7 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_order_summary_template_if_missing(template, data)
                 _refresh_order_flow_content_v3(template, data)
                 _refresh_security_content_v4(template, data)
+                _refresh_marketing_content_v5(template, data)
                 _refresh_premium_template_if_seeded(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 _review_existing_template_copy(template)
@@ -2267,6 +2377,14 @@ def seed_email_automation(db: Session | None = None) -> None:
                 )
             elif event_key == "review_request" and exists.delay_minutes == 0:
                 exists.delay_minutes = delay_minutes
+
+        # Cupons são divulgados na criação ou no e-mail de boas-vindas; não por
+        # carteira/resgate nem por lembretes de expiração.
+        (
+            session.query(EmailAutomation)
+            .filter(EmailAutomation.event_key == "coupon_expiring")
+            .update({"is_active": False}, synchronize_session=False)
+        )
         session.commit()
     except Exception:
         session.rollback()

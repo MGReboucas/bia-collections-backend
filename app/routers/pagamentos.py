@@ -18,7 +18,12 @@ from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
 from app.models.pos_venda import ReembolsoPedido
 from app.models.usuario import Usuario
-from app.modules.email.service import trigger_admin_order_paid_email, trigger_order_email_event
+from app.modules.email.service import (
+    schedule_abandoned_checkout_email_events,
+    trigger_admin_order_paid_email,
+    trigger_order_email_event,
+)
+from app.modules.email.marketing import attribute_order_conversion
 from app.schemas.pedido import PagamentoCartaoRequest, PagamentoCartaoResponse
 from app.services.cupom_service import reservar_uso_cupom
 from app.services.payment_status import (
@@ -529,7 +534,10 @@ def _trigger_payment_email_event(
         trigger_order_email_event(db, event_key, pedido, extra=extra)
     else:
         trigger_order_email_event(db, event_key, pedido)
+    if event_key == "payment_pending":
+        schedule_abandoned_checkout_email_events(db, pedido)
     if event_key == "payment_approved":
+        attribute_order_conversion(db, pedido)
         trigger_admin_order_paid_email(db, pedido, pagamento=pagamento)
 
 

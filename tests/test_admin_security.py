@@ -31,7 +31,15 @@ from app.models.pedido import ItemPedido, Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.two_factor import TwoFactorChallenge
 from app.models.usuario import Usuario
-from app.modules.email.models import EmailLog, EmailTemplate
+from app.modules.email.models import (
+    EmailCampaign,
+    EmailCampaignRecipient,
+    EmailLog,
+    EmailTemplate,
+    EmailTrackingEvent,
+    MarketingPreference,
+    ProductStockInterest,
+)
 from app.modules.email.seeds import (
     ADMIN_EMAIL_TEMPLATE_SEEDS,
     EMAIL_TEMPLATE_SEEDS,
@@ -39,6 +47,12 @@ from app.modules.email.seeds import (
     seed_email_automation,
 )
 from app.modules.email.templates import password_reset_code_email
+from app.modules.email.service import trigger_welcome_email_event
+from app.modules.email.marketing import (
+    attribute_order_conversion,
+    notify_product_back_in_stock,
+    set_marketing_consent,
+)
 from app.services.two_factor_service import hash_two_factor_token
 from main import app
 
@@ -3858,7 +3872,7 @@ def test_codigo_acesso_login_cadastro_reenviar_usa_template_admin(client, monkey
         assert "Instagram" not in log.html_snapshot
 
 
-def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypatch):
+def test_adicionar_cupom_na_conta_nao_dispara_email(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     create_user("cliente-email-cupom", "cliente-email-cupom@example.com")
     db = SessionLocal()
@@ -3884,13 +3898,43 @@ def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypa
     )
 
     assert response.status_code == 200
+    assert email_logs() == []
+
+
+def test_cupom_promocional_novo_dispara_campanha_no_checkout(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-cupom-campanha", MASTER_ADMIN_EMAIL, is_admin=True)
+    recipient_id = create_user("cliente-email-cupom", "cliente-email-cupom@example.com")
+    db = SessionLocal()
+    try:
+        recipient = db.query(Usuario).filter(Usuario.id == recipient_id).one()
+        set_marketing_consent(db, recipient, True, source="teste")
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/admin/cupons",
+        json={
+            "codigo": "EMAIL15",
+            "descricao": "Cupom momentâneo de e-mail",
+            "tipo": "porcentagem",
+            "valor": 15,
+            "validade": (date.today() + timedelta(days=7)).isoformat(),
+            "ativo": True,
+            "valor_minimo_pedido": 50,
+            "max_usos": 100,
+        },
+        headers=auth_headers("master-cupom-campanha"),
+    )
+
+    assert response.status_code == 201
     logs = email_logs()
     assert len(logs) == 1
     log = logs[0]
     assert log.template_slug == "admin-default-cupom-disponivel"
     assert_email_log_snapshot(
         log,
-        event_key="cupom_disponivel",
+        event_key="marketing_campaign",
         recipient="cliente-email-cupom@example.com",
         status_log="pendente",
         subject_contains="Seu cupom EMAIL15 está disponível",
@@ -3900,7 +3944,183 @@ def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypa
     )
 
 
-def test_admin_email_manual_envia_campanha_e_cria_logs(client, monkeypatch):
+def test_email_boas_vindas_inclui_cupom_para_checkout(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    user_id = create_user("cliente-boas-vindas", "cliente-boas-vindas@example.com")
+    db = SessionLocal()
+    try:
+        db.add(
+            Cupom(
+                codigo="BOAS-VINDAS10",
+                descricao="10% na primeira compra",
+                tipo="porcentagem",
+                valor=10,
+                validade=date.today() + timedelta(days=30),
+                ativo=True,
+            )
+        )
+        db.commit()
+        usuario = db.query(Usuario).filter(Usuario.id == user_id).one()
+        trigger_welcome_email_event(db, usuario)
+    finally:
+        db.close()
+
+    logs = email_logs()
+    assert len(logs) == 1
+    assert logs[0].event_key == "boas_vindas"
+    assert "BOAS-VINDAS10" in (logs[0].html_snapshot or "")
+    assert "10%" in (logs[0].text_snapshot or "")
+
+
+def test_campanha_exige_consentimento_aprovacao_rastreia_e_respeita_frequencia(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-marketing", MASTER_ADMIN_EMAIL, is_admin=True)
+    opted_id = create_user("marketing-optin", "marketing-optin@example.com")
+    create_user("marketing-sem-optin", "marketing-sem-optin@example.com")
+    db = SessionLocal()
+    try:
+        opted = db.query(Usuario).filter(Usuario.id == opted_id).one()
+        set_marketing_consent(db, opted, True, source="teste")
+        template = db.query(EmailTemplate).filter(EmailTemplate.evento == "cupom_disponivel").one()
+        template_id = template.id
+    finally:
+        db.close()
+
+    headers = auth_headers("master-marketing")
+    created = client.post(
+        "/api/v1/admin/marketing/campanhas",
+        json={
+            "nome": "Campanha teste",
+            "template_a_id": template_id,
+            "segmento": "todos",
+            "limite_frequencia_dias": 7,
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    campaign_id = created.json()["id"]
+    assert client.post(
+        f"/api/v1/admin/marketing/campanhas/{campaign_id}/enviar", headers=headers
+    ).status_code == 409
+    assert client.post(
+        f"/api/v1/admin/marketing/campanhas/{campaign_id}/solicitar-aprovacao", headers=headers
+    ).status_code == 200
+    assert client.post(
+        f"/api/v1/admin/marketing/campanhas/{campaign_id}/aprovar", headers=headers
+    ).status_code == 200
+    sent = client.post(
+        f"/api/v1/admin/marketing/campanhas/{campaign_id}/enviar", headers=headers
+    )
+    assert sent.status_code == 200
+    assert sent.json()["enfileirados"] == 1
+
+    logs = email_logs()
+    assert len(logs) == 1
+    assert logs[0].email == "marketing-optin@example.com"
+    html = logs[0].html_snapshot or ""
+    assert "/api/v1/marketing/open/" in html
+    assert "/api/v1/marketing/click/" in html
+    assert "/api/v1/marketing/unsubscribe/" in html
+
+    open_token = re.search(r'/marketing/open/([^"/]+)\.gif', html).group(1)
+    assert client.get(f"/api/v1/marketing/open/{open_token}.gif").status_code == 200
+    click_token = re.search(r"/marketing/click/([^\"/]+)", html).group(1)
+    click = client.get(f"/api/v1/marketing/click/{click_token}", follow_redirects=False)
+    assert click.status_code == 302
+    db = SessionLocal()
+    try:
+        pedido = Pedido(
+            numero="MKT-CONV-1",
+            usuario_id=opted_id,
+            status="Pagamento aprovado",
+            forma_pagamento="pix",
+            total=199.9,
+            valor_frete=0,
+        )
+        db.add(pedido)
+        db.commit()
+        db.refresh(pedido)
+        assert attribute_order_conversion(db, pedido) is True
+    finally:
+        db.close()
+
+    metrics = client.get(
+        f"/api/v1/admin/marketing/campanhas/{campaign_id}/metricas", headers=headers
+    )
+    assert metrics.status_code == 200
+    assert metrics.json()["destinatarios"] == 1
+    assert metrics.json()["aberturas"] == 1
+    assert metrics.json()["cliques"] == 1
+    assert metrics.json()["conversoes"] == 1
+
+
+def test_descadastro_bloqueia_novas_campanhas(client):
+    user_id = create_user("marketing-descadastro", "marketing-descadastro@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.id == user_id).one()
+        set_marketing_consent(db, user, True, source="teste")
+    finally:
+        db.close()
+
+    preferences = client.get(
+        "/api/v1/marketing/preferencias",
+        headers=auth_headers("marketing-descadastro"),
+    )
+    assert preferences.status_code == 200
+    unsubscribe_url = preferences.json()["descadastro_url"]
+    response = client.get(unsubscribe_url)
+    assert response.status_code == 200
+    db = SessionLocal()
+    try:
+        preference = db.query(MarketingPreference).filter(
+            MarketingPreference.user_id == user_id
+        ).one()
+        assert preference.email_consent is False
+        assert preference.unsubscribed_at is not None
+    finally:
+        db.close()
+
+
+def test_interesse_real_em_estoque_dispara_uma_unica_notificacao(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    user_id = create_user("cliente-reposicao", "cliente-reposicao@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.id == user_id).one()
+        set_marketing_consent(db, user, True, source="teste")
+        produto = Produto(nome="Bolsa esgotada", preco=129.9, estoque=0, ativo=True)
+        db.add(produto)
+        db.commit()
+        db.refresh(produto)
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    subscribed = client.post(
+        f"/api/v1/marketing/estoque/{produto_id}",
+        headers=auth_headers("cliente-reposicao"),
+    )
+    assert subscribed.status_code == 201
+    db = SessionLocal()
+    try:
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        produto.estoque = 5
+        db.commit()
+        assert notify_product_back_in_stock(db, produto) == 1
+        assert notify_product_back_in_stock(db, produto) == 0
+        interest = db.query(ProductStockInterest).filter(
+            ProductStockInterest.user_id == user_id,
+            ProductStockInterest.product_id == produto_id,
+        ).one()
+        assert interest.is_active is False
+        assert interest.notified_at is not None
+    finally:
+        db.close()
+    assert len(email_logs()) == 1
+
+
+def test_admin_email_manual_exige_fluxo_de_aprovacao(client, monkeypatch):
     create_user("master-email-manual", MASTER_ADMIN_EMAIL, is_admin=True)
     recipient_user_id = create_user("manual-target", "manual-target@example.com")
     headers = auth_headers("master-email-manual")
@@ -3941,37 +4161,10 @@ def test_admin_email_manual_envia_campanha_e_cria_logs(client, monkeypatch):
         headers=headers,
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total"] == 2
-    assert body["enviados"] == 2
-    assert body["falhas"] == 0
-    assert len(sent) == 2
-
-    logs = email_logs()
-    assert len(logs) == 2
-    logs_by_email = {log.email: log for log in logs}
-    assert_email_log_snapshot(
-        logs_by_email["manual-target@example.com"],
-        event_key="manual",
-        recipient="manual-target@example.com",
-        status_log="enviado",
-        subject_contains="Ola manual-target - VIP",
-        html_contains="Oferta liberada",
-        text_contains="Oferta liberada",
-        payload_values={"cliente_nome": "manual-target", "mensagem": "Oferta liberada"},
-    )
-    explicit_payload = assert_email_log_snapshot(
-        logs_by_email["avulsa@example.com"],
-        event_key="manual",
-        recipient="avulsa@example.com",
-        status_log="enviado",
-        subject_contains="Ola Avulsa - VIP",
-        html_contains="Avulsa",
-        text_contains="Oferta liberada",
-        payload_values={"cliente_nome": "Avulsa", "mensagem": "Oferta liberada"},
-    )
-    assert explicit_payload["variaveis"]["assunto_extra"] == "VIP"
+    assert response.status_code == 409
+    assert "/admin/marketing/campanhas" in response.json()["detail"]["message"]
+    assert sent == []
+    assert email_logs() == []
 
 
 def test_admin_emails_crud_e_limite_de_um_ativo_por_evento(client):

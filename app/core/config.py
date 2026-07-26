@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     EMAIL_SCHEDULER_INTERVAL_SECONDS: int = 30
     EMAIL_LOG_CONTENT_RETENTION_DAYS: int = 90
     EMAIL_REVIEW_DELAY_MINUTES: int = 4320
+    EMAIL_WELCOME_COUPON_CODE: str = "BOAS-VINDAS10"
 
     # Mercado Pago — configure in .env
     MP_ACCESS_TOKEN: str = ""

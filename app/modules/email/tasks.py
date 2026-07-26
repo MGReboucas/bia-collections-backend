@@ -75,6 +75,17 @@ def purge_expired_email_content() -> int:
         db.close()
 
 
+def process_due_marketing_campaigns() -> int:
+    from app.core.database import SessionLocal
+    from app.modules.email.marketing import process_due_campaigns
+
+    db = SessionLocal()
+    try:
+        return process_due_campaigns(db)
+    finally:
+        db.close()
+
+
 def _scheduler_loop() -> None:
     last_purge_date = None
     interval = max(5, settings.EMAIL_SCHEDULER_INTERVAL_SECONDS)
@@ -83,6 +94,9 @@ def _scheduler_loop() -> None:
             processed = process_due_scheduled_emails()
             if processed:
                 logger.info("Email scheduler enqueued %s due message(s).", processed)
+            campaigns = process_due_marketing_campaigns()
+            if campaigns:
+                logger.info("Marketing scheduler enqueued %s campaign message(s).", campaigns)
             today = datetime.now(timezone.utc).date()
             if last_purge_date != today:
                 purged = purge_expired_email_content()

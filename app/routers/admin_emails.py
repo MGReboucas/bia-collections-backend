@@ -305,6 +305,10 @@ def enviar_template_manual(
         raise _error(404, "Template manual nao encontrado.")
     if template.status != "ativo" or not template.is_active:
         raise _error(409, "Template manual precisa estar ativo para envio.")
+    raise _error(
+        409,
+        "Envio direto desativado. Crie, aprove e envie a campanha em /admin/marketing/campanhas.",
+    )
 
     recipients: list[dict[str, object]] = []
     if data.usuario_ids:

@@ -21,6 +21,7 @@ from app.modules.email.service import (
     EmailAutomationService,
     trigger_welcome_email_event,
 )
+from app.modules.email.marketing import set_marketing_consent
 from app.services.two_factor_service import (
     CreatedTwoFactorChallenge,
     TwoFactorError,
@@ -229,6 +230,12 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.add(user)
     db.commit()
     db.refresh(user)
+    set_marketing_consent(
+        db,
+        user,
+        data.aceita_email_marketing,
+        source="cadastro",
+    )
     
     challenge = create_two_factor_challenge(db, user, finalidade="login")
     _send_two_factor_email(db, challenge, user.email)

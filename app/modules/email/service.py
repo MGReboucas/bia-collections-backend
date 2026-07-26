@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 EMAIL_STATUS_PENDING = "pendente"
 EMAIL_STATUS_SENT = "enviado"
 EMAIL_STATUS_ERROR = "erro"
+EMAIL_STATUS_CANCELLED = "cancelado"
 LEGACY_PENDING_STATUSES = {"queued", "scheduled"}
 LEGACY_SENT_STATUSES = {"sent"}
 LEGACY_ERROR_STATUSES = {"failed"}
@@ -403,7 +404,7 @@ class EmailAutomationService:
             "link_rastreio": ("tracking_url",),
             "produto_nome": ("product_name",),
             "produto_url": ("product_url",),
-            "carrinho_url": ("cart_url",),
+            "carrinho_url": ("cart_url", "payment_link", "link_pagamento"),
             "cupom_codigo": ("coupon_code",),
             "cupom_descricao": ("coupon_description",),
             "cupom_valor": ("coupon_value",),
@@ -631,6 +632,8 @@ class EmailAutomationService:
             return log
 
         try:
+            if self._cancel_stale_marketing_email(log):
+                return log
             log.attempts = (log.attempts or 0) + 1
             log.html_snapshot = ensure_brand_logo_html(log.html_snapshot)
             result = self.provider.send(
@@ -645,9 +648,18 @@ class EmailAutomationService:
             log.sent_at = now
             log.error_message = None
             log.next_attempt_at = None
+            if log.event_key == "marketing_campaign":
+                from app.modules.email.models import EmailCampaignRecipient
+
+                recipient = self.db.query(EmailCampaignRecipient).filter(
+                    EmailCampaignRecipient.email_log_id == log.id
+                ).first()
+                if recipient:
+                    recipient.status = "enviado"
             self.db.commit()
             self.db.refresh(log)
             return log
+
         except Exception as exc:
             log.error_message = str(exc)[:2000]
             if log.attempts < MAX_ATTEMPTS:
@@ -672,6 +684,28 @@ class EmailAutomationService:
                 enqueue_email_log(log.id, delay_minutes=retry_delay)
             logger.exception("Falha ao enviar email log_id=%s", log.id)
             return log
+
+    def _cancel_stale_marketing_email(self, log: EmailLog) -> bool:
+        """Do not send recovery messages after the customer has paid or left the pending state."""
+        if log.event_key not in {
+            "abandoned_cart_1h",
+            "abandoned_cart_24h",
+            "abandoned_cart_3d",
+            "carrinho_abandonado",
+        } or not log.order_id:
+            return False
+
+        pedido = self.db.query(Pedido).filter(Pedido.id == log.order_id).first()
+        if pedido and pedido.status == "Aguardando pagamento":
+            return False
+
+        log.status = EMAIL_STATUS_CANCELLED
+        log.error_message = "Automação cancelada: o pedido não está mais aguardando pagamento."
+        log.next_attempt_at = None
+        self.db.commit()
+        self.db.refresh(log)
+        logger.info("Email de recuperação cancelado log_id=%s pedido_id=%s", log.id, log.order_id)
+        return True
 
     def process_due_scheduled_emails(self, limit: int = 50) -> int:
         now = datetime.now(timezone.utc)
@@ -1250,24 +1284,6 @@ def build_coupon_email_payload(
     }
 
 
-def trigger_coupon_available_email_event(
-    db: Session,
-    cupom: Cupom,
-    usuario: Usuario,
-) -> None:
-    try:
-        EmailAutomationService(db).trigger_event(
-            "coupon_available",
-            build_coupon_email_payload(cupom, usuario),
-        )
-    except Exception:
-        logger.exception(
-            "Falha ao disparar automacao de email cupom_disponivel cupom=%s usuario=%s",
-            cupom.codigo,
-            usuario.id,
-        )
-
-
 def trigger_order_email_event(
     db: Session,
     event_key: str,
@@ -1280,6 +1296,72 @@ def trigger_order_email_event(
         EmailAutomationService(db).trigger_event(event_key, payload)
     except Exception:
         logger.exception("Falha ao disparar automacao de email event_key=%s pedido=%s", event_key, pedido.numero)
+
+
+def schedule_abandoned_checkout_email_events(db: Session, pedido: Pedido) -> None:
+    """Schedule the complete recovery sequence and let the worker cancel it after payment."""
+    if pedido.status != "Aguardando pagamento":
+        return
+    for event_key in ("abandoned_cart_1h", "abandoned_cart_24h", "abandoned_cart_3d"):
+        trigger_order_email_event(
+            db,
+            event_key,
+            pedido,
+            extra={
+                "payment_link": _store_url(f"checkout?pedido={pedido.numero}"),
+                "link_pagamento": _store_url(f"checkout?pedido={pedido.numero}"),
+                "dedupe_key": f"{event_key}:{pedido.numero}",
+            },
+        )
+
+
+def trigger_new_coupon_campaign(db: Session, cupom: Cupom, *, created_by_id: int) -> int:
+    """Announce a newly-created temporary coupon to customers for checkout use."""
+    if (
+        not cupom.ativo
+        or cupom.deletado_em is not None
+        or cupom.validade < datetime.now(timezone.utc).date()
+        or cupom.codigo == settings.EMAIL_WELCOME_COUPON_CODE.strip().upper()
+    ):
+        return 0
+
+    from app.modules.email.marketing import dispatch_campaign
+    from app.modules.email.models import EmailCampaign
+
+    template = (
+        db.query(EmailTemplate)
+        .filter(
+            EmailTemplate.evento == "cupom_disponivel",
+            EmailTemplate.status == "ativo",
+            EmailTemplate.is_active.is_(True),
+        )
+        .order_by(EmailTemplate.updated_at.desc(), EmailTemplate.id.desc())
+        .first()
+    )
+    if not template:
+        return 0
+    payload = build_coupon_email_payload(cupom, Usuario(
+        id=0, username="cliente", email="placeholder@invalid.local", senha_hash=""
+    ))
+    for key in ("to", "email", "user_id", "customer_name", "cliente_nome", "dedupe_key"):
+        payload.pop(key, None)
+    campaign = EmailCampaign(
+        name=f"Cupom promocional {cupom.codigo}",
+        template_a_id=template.id,
+        status="aprovada",
+        segment="todos",
+        ab_percentage=0,
+        frequency_cap_days=7,
+        payload_json=json.dumps(payload, ensure_ascii=False),
+        approved_at=datetime.now(timezone.utc),
+        approved_by_id=created_by_id,
+        created_by_id=created_by_id,
+    )
+    db.add(campaign)
+    db.commit()
+    db.refresh(campaign)
+    return dispatch_campaign(db, campaign)
+
 
 def trigger_welcome_email_event(
     db: Session,
@@ -1298,6 +1380,20 @@ def trigger_welcome_email_event(
             or "/"
         )
 
+        welcome_coupon_code = settings.EMAIL_WELCOME_COUPON_CODE.strip().upper()
+        welcome_coupon = (
+            db.query(Cupom)
+            .filter(
+                Cupom.codigo == welcome_coupon_code,
+                Cupom.ativo.is_(True),
+                Cupom.deletado_em.is_(None),
+            )
+            .first()
+            if welcome_coupon_code
+            else None
+        )
+        coupon_payload = build_coupon_email_payload(welcome_coupon, usuario) if welcome_coupon else {}
+
         payload = {
             "to": usuario.email,
             "email": usuario.email,
@@ -1314,6 +1410,12 @@ def trigger_welcome_email_event(
 
             "store_url": store_url,
             "loja_url": store_url,
+            "welcome_coupon_code": coupon_payload.get("coupon_code", ""),
+            "cupom_boas_vindas": coupon_payload.get("cupom_codigo", ""),
+            "welcome_coupon_value": coupon_payload.get("coupon_value", ""),
+            "valor_cupom_boas_vindas": coupon_payload.get("cupom_valor", ""),
+            "welcome_coupon_expires_at": coupon_payload.get("coupon_expires_at", ""),
+            "validade_cupom_boas_vindas": coupon_payload.get("cupom_validade", ""),
 
             "dedupe_key": f"user_registered:{usuario.id}",
         }
