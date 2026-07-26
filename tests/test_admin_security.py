@@ -645,8 +645,8 @@ def test_envio_por_resend_usa_api_http_quando_api_key_configurada(monkeypatch):
     assert 'data-bia-email-logo="true"' in captured["json"]["html"]
     assert "bia-collections-logooficial.png" in captured["json"]["html"]
     assert 'width="230"' in captured["json"]["html"]
-    assert "Confira nossos cupons no Instagram da loja." in captured["json"]["html"]
-    assert "https://www.instagram.com/biacollectionstore" in captured["json"]["html"]
+    assert "Se você não tentou acessar ou criar uma conta" in captured["json"]["html"]
+    assert "Instagram" not in captured["json"]["html"]
     assert "123456" in captured["json"]["text"]
 
 
@@ -691,8 +691,8 @@ def test_envio_por_brevo_usa_api_http_quando_configurado(monkeypatch):
     assert 'data-bia-email-logo="true"' in captured["json"]["htmlContent"]
     assert "bia-collections-logooficial.png" in captured["json"]["htmlContent"]
     assert 'width="230"' in captured["json"]["htmlContent"]
-    assert "Confira nossos cupons no Instagram da loja." in captured["json"]["htmlContent"]
-    assert "https://www.instagram.com/biacollectionstore" in captured["json"]["htmlContent"]
+    assert "Se você não tentou acessar ou criar uma conta" in captured["json"]["htmlContent"]
+    assert "Instagram" not in captured["json"]["htmlContent"]
     assert "123456" in captured["json"]["textContent"]
 
 
@@ -1910,7 +1910,9 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     payment = creates[0]["transactions"]["payments"][0]
     assert payment["amount"] == "60.00"
     assert payment["payment_method"] == {"id": "pix", "type": "bank_transfer"}
-    assert email_events == []
+    assert len(email_events) == 1
+    assert email_events[0][0][1] == "payment_pending"
+    assert email_events[0][0][2].numero == "0000001"
 
     db = SessionLocal()
     try:
@@ -3125,6 +3127,195 @@ def test_renderizacao_adiciona_resumo_quando_template_antigo_nao_possui_card():
     assert rendered.html.index("Produto Teste") < rendered.html.index("</div>")
 
 
+def test_renderizacao_de_todo_fluxo_de_pedidos_mantem_um_unico_resumo_padronizado():
+    seeds_module = importlib.import_module("app.modules.email.seeds")
+    email_service_module = importlib.import_module("app.modules.email.service")
+    summary_html = (
+        '<table role="presentation" width="100%" style="margin:20px 0 24px;'
+        'border:1px solid #e8e1d8;background:#fbfaf8;">'
+        "<tr><td>Resumo do pedido</td></tr><tr><td>Produto Teste</td></tr></table>"
+    )
+    payload = {
+        "cliente_nome": "Bianca",
+        "pedido_numero": "BC-1048",
+        "pedido_total": "R$ 249,90",
+        "pedido_itens_html": summary_html,
+        "pedido_itens_text": "Produto Teste",
+        "loja_nome": "Bia Collections",
+        "loja_url": "https://bia.example.test",
+        "loja_home_url": "https://bia.example.test",
+        "link_meus_pedidos": "https://bia.example.test/meus-pedidos",
+    }
+
+    db = SessionLocal()
+    try:
+        service = email_service_module.EmailAutomationService(db)
+        for data in seeds_module.ADMIN_EMAIL_TEMPLATE_SEEDS:
+            if data["evento"] not in seeds_module.ORDER_SUMMARY_ADMIN_EVENTS:
+                continue
+            template = EmailTemplate(**data)
+            rendered = service.render_template(template.slug, payload, template=template)
+            assert rendered.html.count("Resumo do pedido") == 1, template.slug
+            assert rendered.html.count("Produto Teste") == 1, template.slug
+            assert "{{pedido_itens_html}}" not in rendered.html, template.slug
+            assert rendered.html.index("Produto Teste") < rendered.html.rindex("R$ 249,90"), template.slug
+    finally:
+        db.close()
+
+
+def test_statuses_pendentes_de_pagamento_disparam_email_pendente():
+    payment_status_module = importlib.import_module("app.services.payment_status")
+
+    assert (
+        payment_status_module.ORDER_STATUS_EMAIL_EVENTS[
+            payment_status_module.ORDER_STATUS_AGUARDANDO
+        ]
+        == "payment_pending"
+    )
+    for status_mp in (
+        "pending",
+        "in_process",
+        "processing",
+        "in_review",
+        "action_required",
+    ):
+        assert payment_status_module.PAYMENT_EMAIL_EVENTS[status_mp] == "payment_pending"
+
+
+def test_fluxo_completo_troca_devolucao_dispara_emails_cliente(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-pos-venda", MASTER_ADMIN_EMAIL, is_admin=True)
+    order_id, _ = create_order_record(
+        username="cliente-troca",
+        email="cliente-troca@example.com",
+        numero="TROCA1001",
+        status_pedido="Entregue",
+    )
+
+    created = client.post(
+        "/api/v1/pos-venda/trocas-devolucoes",
+        json={
+            "pedido_numero": "TROCA1001",
+            "tipo": "troca",
+            "motivo": "O tamanho recebido nao serviu como esperado.",
+        },
+        headers=auth_headers("cliente-troca"),
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["status"] == "recebida"
+    assert body["protocolo"].startswith("TD-TROCA1001-")
+
+    approved = client.patch(
+        f"/api/v1/admin/pos-venda/trocas-devolucoes/{body['id']}",
+        json={"status": "aprovada"},
+        headers=auth_headers("master-pos-venda"),
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "aprovada"
+
+    logs = [log for log in email_logs() if log.order_id == order_id]
+    assert {log.event_key for log in logs} >= {
+        "troca_devolucao_recebida",
+        "troca_devolucao_aprovada",
+    }
+    customer_logs = [log for log in logs if log.email == "cliente-troca@example.com"]
+    assert all("Resumo do pedido" in (log.html_snapshot or "") for log in customer_logs)
+
+
+def test_documento_e_reembolso_aprovado_disparam_emails(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-documento", MASTER_ADMIN_EMAIL, is_admin=True)
+    order_id, _ = create_order_record(
+        username="cliente-documento",
+        email="cliente-documento@example.com",
+        numero="DOC1001",
+        status_pedido="Entregue",
+        total=249.9,
+    )
+
+    document = client.post(
+        "/api/v1/admin/pos-venda/pedidos/DOC1001/documentos",
+        json={
+            "tipo": "nota_fiscal",
+            "numero": "NF-1001",
+            "url": "https://documentos.example.test/nf-1001.pdf",
+        },
+        headers=auth_headers("master-documento"),
+    )
+    refund = client.post(
+        "/api/v1/admin/pos-venda/pedidos/DOC1001/reembolsos/aprovar",
+        json={"valor": 100.0, "prazo_dias_uteis": 7},
+        headers=auth_headers("master-documento"),
+    )
+
+    assert document.status_code == 201
+    assert document.json()["tipo"] == "nota_fiscal"
+    assert refund.status_code == 201
+    assert refund.json()["status"] == "aprovado"
+    logs = [log for log in email_logs() if log.order_id == order_id]
+    assert {log.event_key for log in logs} >= {
+        "nota_fiscal_recibo",
+        "reembolso_aprovado",
+    }
+    assert all("Resumo do pedido" in (log.html_snapshot or "") for log in logs)
+
+
+def test_metricas_email_e_retry_usam_api_admin_consolidada(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-metricas-email", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        log = EmailLog(
+            email="cliente-metricas@example.com",
+            template_slug="teste",
+            event_key="pedido_criado",
+            status="enviado",
+            attempts=1,
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        log_id = log.id
+    finally:
+        db.close()
+
+    headers = auth_headers("master-metricas-email")
+    metrics = client.get("/api/v1/admin/emails/metricas", headers=headers)
+    retry = client.post(f"/api/v1/admin/emails/logs/{log_id}/retry", headers=headers)
+
+    assert metrics.status_code == 200
+    assert metrics.json()["total"] == 1
+    assert metrics.json()["taxa_sucesso"] == 100.0
+    assert retry.status_code == 409
+
+
+def test_pedido_entregue_agenda_avaliacao_para_tres_dias(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    create_user("master-review-delay", MASTER_ADMIN_EMAIL, is_admin=True)
+    order_id, _ = create_order_record(
+        username="cliente-review-delay",
+        email="cliente-review-delay@example.com",
+        numero="REVIEW3001",
+        status_pedido="Enviado",
+    )
+
+    response = client.put(
+        "/api/v1/admin/pedidos/REVIEW3001/status",
+        json={"status": "Entregue"},
+        headers=auth_headers("master-review-delay"),
+    )
+
+    assert response.status_code == 200
+    logs = [log for log in email_logs() if log.order_id == order_id]
+    delivered = next(log for log in logs if log.event_key == "pedido_entregue")
+    review = next(log for log in logs if log.event_key == "avaliacao_pedido")
+    assert delivered.next_attempt_at is None
+    assert review.next_attempt_at is not None
+    delay = review.next_attempt_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
+    assert timedelta(days=2, hours=23) < delay <= timedelta(days=3, minutes=1)
+
+
 def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     sent, _ = patch_service_email_provider(monkeypatch)
@@ -3663,8 +3854,8 @@ def test_codigo_acesso_login_cadastro_reenviar_usa_template_admin(client, monkey
         assert payload["codigo"] in log.html_snapshot
         assert payload["codigo"] in log.text_snapshot
         assert log.subject == "Seu código de acesso - Bia Collections"
-        assert "Confira nossos cupons no Instagram da loja." in log.html_snapshot
-        assert "https://www.instagram.com/biacollectionstore" in log.html_snapshot
+        assert "Se você não tentou acessar" in log.html_snapshot
+        assert "Instagram" not in log.html_snapshot
 
 
 def test_cupom_disponivel_dispara_quando_cliente_adiciona_cupom(client, monkeypatch):
@@ -3930,6 +4121,8 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
         "codigo_acesso",
         "senha_alterada",
         "dados_sensiveis_alterados",
+        "confirmacao_alteracao_email",
+        "novo_acesso",
         "produto_voltou_estoque",
         "carrinho_abandonado",
         "cupom_disponivel",
@@ -3983,7 +4176,14 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
     assert "background: #111111" in by_event["pedido_criado"]["html"]
     for evento, template in by_event.items():
         assert 'data-bia-template-style="premium-v2"' in template["html"]
-        if not evento.startswith("interno_"):
+        if not evento.startswith("interno_") and evento not in {
+            "recuperacao_senha",
+            "codigo_acesso",
+            "senha_alterada",
+            "dados_sensiveis_alterados",
+            "confirmacao_alteracao_email",
+            "novo_acesso",
+        }:
             assert "Ver Instagram" in template["html"]
 
     db = SessionLocal()
@@ -3992,7 +4192,15 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
         assert automation_templates
         for template in automation_templates:
             assert 'data-bia-template-style="premium-v2"' in template.html_template
-            assert "Ver Instagram" in template.html_template
+            if template.slug not in {
+                "password-reset",
+                "two-factor-code",
+                "password-changed",
+                "email-confirmation",
+                "email-change-confirmation",
+                "new-login-alert",
+            }:
+                assert "Ver Instagram" in template.html_template
 
         all_templates = db.query(EmailTemplate).all()
         forbidden_unaccented_copy = re.compile(
@@ -4050,7 +4258,7 @@ def test_seed_cria_templates_padrao_do_painel_admin(client):
         ).one()
         assert "Uma nova chance para escolher seus favoritos" in expirado_atualizado.html
         assert "Comprar novamente" in expirado_atualizado.html
-        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 30
+        assert db.query(EmailTemplate).filter(EmailTemplate.evento.isnot(None)).count() == 32
     finally:
         db.close()
 

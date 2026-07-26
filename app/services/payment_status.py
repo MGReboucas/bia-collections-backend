@@ -25,6 +25,7 @@ ORDER_STATUSES = {
 }
 
 ORDER_STATUS_EMAIL_EVENTS = {
+    ORDER_STATUS_AGUARDANDO: "payment_pending",
     ORDER_STATUS_PAGO: "payment_approved",
     ORDER_STATUS_PAGO_LEGACY: "payment_approved",
     ORDER_STATUS_PREPARANDO: "order_preparing",
@@ -82,6 +83,11 @@ MP_TO_PAYMENT_STATUS = {
 PAYMENT_EMAIL_EVENTS = {
     "approved": "payment_approved",
     "processed": "payment_approved",
+    "pending": "payment_pending",
+    "in_process": "payment_pending",
+    "processing": "payment_pending",
+    "in_review": "payment_pending",
+    "action_required": "payment_pending",
     "rejected": "payment_refused",
     "failed": "payment_refused",
     "cancelled": "payment_expired",

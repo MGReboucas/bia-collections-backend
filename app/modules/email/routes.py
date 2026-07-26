@@ -23,6 +23,7 @@ router = APIRouter(
     prefix="/admin/email",
     tags=["admin-email"],
     dependencies=[Depends(get_current_master_admin_user)],
+    deprecated=True,
 )
 
 
@@ -229,10 +230,15 @@ def reenviar_email_com_falha(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_master_admin_user),
 ):
-    try:
-        log = EmailAutomationService(db).retry_failed_email(log_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    existing = db.query(EmailLog).filter(EmailLog.id == log_id).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Log de email nao encontrado.")
+    if existing.status not in {"pendente", "erro", "queued", "scheduled", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Apenas emails pendentes ou com falha podem ser reenviados.",
+        )
+    log = EmailAutomationService(db).retry_failed_email(log_id)
     return RetryEmailResponse(
         id=log.id,
         status=log.status,

@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.modules.email.models import EmailAutomation, EmailTemplate
 from app.modules.email.templates import BRAND_INSTAGRAM_URL, brand_email_html
@@ -36,6 +37,22 @@ ORDER_SUMMARY_ADMIN_EVENTS = {
     "troca_devolucao_aprovada",
     "troca_devolucao_recusada",
     "avaliacao_pedido",
+}
+SECURITY_ADMIN_EVENTS = {
+    "recuperacao_senha",
+    "codigo_acesso",
+    "senha_alterada",
+    "dados_sensiveis_alterados",
+    "confirmacao_alteracao_email",
+    "novo_acesso",
+}
+SECURITY_TEMPLATE_SLUGS = {
+    "email-confirmation",
+    "password-reset",
+    "two-factor-code",
+    "password-changed",
+    "email-change-confirmation",
+    "new-login-alert",
 }
 
 
@@ -295,6 +312,7 @@ def _template(
     footer_cta_label: str | None = None,
     footer_cta_url: str | None = None,
 ) -> dict[str, Any]:
+    security_template = slug in SECURITY_TEMPLATE_SLUGS or category == "seguranca"
     if category in ORDER_SUMMARY_CATEGORIES and "order_number" in variables:
         body_html, text_template, variables = _with_order_summary(
             body_html,
@@ -311,12 +329,13 @@ def _template(
     text_template = _review_portuguese_copy(text_template)
     cta_label = _review_portuguese_copy(cta_label) if cta_label else None
     footer_cta_label = _review_portuguese_copy(footer_cta_label) if footer_cta_label else None
-    if not cta_label or not cta_url:
+    if not security_template and (not cta_label or not cta_url):
         default_label, default_url = _default_customer_cta(variables, admin=False)
         cta_label = cta_label or default_label
         cta_url = cta_url or default_url
-    footer_cta_label = footer_cta_label or "Ver Instagram"
-    footer_cta_url = footer_cta_url or BRAND_INSTAGRAM_URL
+    if not security_template:
+        footer_cta_label = footer_cta_label or "Ver Instagram"
+        footer_cta_url = footer_cta_url or BRAND_INSTAGRAM_URL
     return {
         "name": name,
         "slug": slug,
@@ -333,7 +352,7 @@ def _template(
             footer_cta_label=footer_cta_label,
             footer_cta_url=footer_cta_url,
         ),
-        "text_template": _premium_text(text_template, internal=False),
+        "text_template": _premium_text(text_template, internal=security_template),
         "variables_schema": _schema(*variables),
         "is_active": True,
     }
@@ -374,11 +393,12 @@ def _admin_template(
     cta_label = _review_portuguese_copy(cta_label) if cta_label else None
     footer_cta_label = _review_portuguese_copy(footer_cta_label) if footer_cta_label else None
     internal = evento.startswith("interno_")
-    if not internal and (not cta_label or not cta_url):
+    security_template = evento in SECURITY_ADMIN_EVENTS
+    if not internal and not security_template and (not cta_label or not cta_url):
         default_label, default_url = _default_customer_cta(variables, admin=True)
         cta_label = cta_label or default_label
         cta_url = cta_url or default_url
-    if not internal:
+    if not internal and not security_template:
         footer_cta_label = footer_cta_label or "Ver Instagram"
         footer_cta_url = footer_cta_url or BRAND_INSTAGRAM_URL
     html = brand_email_html(
@@ -402,7 +422,7 @@ def _admin_template(
         "status": status,
         "html": html,
         "html_template": html,
-        "text_template": _premium_text(text_template, internal=internal),
+        "text_template": _premium_text(text_template, internal=internal or security_template),
         "variables_schema": _schema(*variables),
         "is_active": status == "ativo",
     }
@@ -493,6 +513,23 @@ PAYMENT_EXPIRED_TEMPLATE_CURRENT_MARKERS = (
     "Uma nova chance para escolher seus favoritos",
     "Comprar novamente",
 )
+ORDER_FLOW_CONTENT_V3_MARKERS = {
+    "admin-default-pedido-enviado": ("saiu para entrega",),
+    "admin-default-pedido-cancelado": ("Se o pagamento ja tiver sido feito", "Se o pagamento já tiver sido feito"),
+    "admin-default-reembolso-aprovado": ("O prazo de processamento pode variar",),
+    "admin-default-nota-fiscal-recibo": ("pelos links do pedido",),
+}
+SECURITY_CONTENT_V4_MARKERS = {
+    "two-factor-code": ("Confira nossos cupons no Instagram",),
+    "admin-default-codigo-acesso": ("Confira nossos cupons no Instagram",),
+    "password-reset": ("Use o codigo <strong>{{reset_code}}</strong>", "Use o código <strong>{{reset_code}}</strong>"),
+    "admin-default-recuperacao-senha": ("Use o codigo abaixo para continuar", "Use o código abaixo para continuar"),
+    "password-changed": ("fale com nosso atendimento",),
+    "admin-default-senha-alterada": ("fale com nosso atendimento",),
+    "admin-default-dados-sensiveis-alterados": ("fale com nosso atendimento",),
+    "admin-default-confirmacao-alteracao-email": ("Use o codigo para confirmar",),
+    "admin-default-novo-acesso": ("Novo acesso a sua conta",),
+}
 
 
 def _refresh_access_code_template_if_old(template: EmailTemplate, data: dict[str, Any]) -> None:
@@ -718,6 +755,38 @@ def _refresh_order_summary_template_if_missing(template: EmailTemplate, data: di
         setattr(template, key, value)
 
 
+def _refresh_order_flow_content_v3(template: EmailTemplate, data: dict[str, Any]) -> None:
+    markers = ORDER_FLOW_CONTENT_V3_MARKERS.get(data["slug"])
+    if not markers:
+        return
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in ("html", "html_template", "text_template")
+    )
+    if not any(marker in content for marker in markers):
+        return
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
+def _refresh_security_content_v4(template: EmailTemplate, data: dict[str, Any]) -> None:
+    markers = SECURITY_CONTENT_V4_MARKERS.get(data["slug"])
+    if not markers:
+        return
+    content = " ".join(
+        str(getattr(template, key, "") or "")
+        for key in ("html", "html_template", "text_template")
+    )
+    if not any(marker in content for marker in markers):
+        return
+    for key, value in data.items():
+        if key in {"status", "is_active"}:
+            continue
+        setattr(template, key, value)
+
+
 def _review_existing_template_copy(template: EmailTemplate) -> None:
     for key in (
         "nome",
@@ -776,9 +845,19 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         preheader="Use o codigo enviado para criar uma nova senha.",
         title="Redefinicao de senha",
         intro="Recebemos uma solicitacao para redefinir sua senha.",
-        body_html="<p>Use o codigo <strong>{{reset_code}}</strong> para criar uma nova senha. Ele expira em {{expires_in_minutes}} minutos.</p>",
-        text_template="Use o codigo {{reset_code}} para redefinir sua senha. Ele expira em {{expires_in_minutes}} minutos.",
-        variables=("reset_code", "expires_in_minutes"),
+        body_html=(
+            "<p>Use o codigo <strong>{{reset_code}}</strong> para criar uma nova senha. "
+            "Ele expira em {{expires_in_minutes}} minutos.</p>"
+            "<p>Se voce nao solicitou a redefinicao, ignore esta mensagem e mantenha sua senha atual.</p>"
+        ),
+        text_template=(
+            "Use o codigo {{reset_code}} para redefinir sua senha. "
+            "Ele expira em {{expires_in_minutes}} minutos. "
+            "Se voce nao solicitou a redefinicao, ignore esta mensagem e mantenha sua senha atual."
+        ),
+        variables=("reset_code", "expires_in_minutes", "security_url"),
+        cta_label="Redefinir senha",
+        cta_url="{{security_url}}",
     ),
     _template(
         name="Código de acesso",
@@ -792,16 +871,13 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
             "<p style=\"text-align:center; font-size:26px; letter-spacing:8px;\"><strong>{{code}}</strong></p>"
             "<p style=\"text-align:center;\">Este código expira em {{expires_in_minutes}} minutos.</p>"
             "<p style=\"text-align:center;\">Por segurança, não compartilhe este código com ninguém.</p>"
-            "<p style=\"text-align:center;\">Confira nossos cupons no Instagram da loja.</p>"
+            "<p style=\"text-align:center;\">Se voce nao tentou acessar sua conta, ignore esta mensagem e nao compartilhe o codigo.</p>"
         ),
         text_template=(
             "Seu código de acesso é: {{code}}. Ele expira em {{expires_in_minutes}} minutos. "
-            "Confira nossos cupons no Instagram da loja: "
-            f"{BRAND_INSTAGRAM_URL}"
+            "Se voce nao tentou acessar sua conta, ignore esta mensagem e nao compartilhe o codigo."
         ),
         variables=("code", "expires_in_minutes"),
-        cta_label="Ver Instagram",
-        cta_url=BRAND_INSTAGRAM_URL,
     ),
     _template(
         name="Senha alterada",
@@ -811,9 +887,60 @@ EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         preheader="Confirmacao de alteracao de senha.",
         title="Senha alterada",
         intro="Ola {{customer_name}}, sua senha foi alterada com sucesso.",
-        body_html="<p>Se foi voce, nenhuma acao e necessaria. Se nao reconhece esta alteracao, fale com nosso atendimento imediatamente.</p>",
-        text_template="Sua senha da Bia Collections foi alterada. Se nao reconhece esta alteracao, fale com nosso atendimento.",
-        variables=("customer_name", "store_url"),
+        body_html=(
+            "<p style=\"margin:0 0 14px;\">Alteracao concluida em <strong>{{data_hora}}</strong>.</p>"
+            "<p style=\"margin:0;\">Se nao foi voce, proteja sua conta imediatamente usando o link abaixo.</p>"
+        ),
+        text_template=(
+            "Sua senha da Bia Collections foi alterada em {{data_hora}}. "
+            "Se nao foi voce, proteja sua conta em {{security_url}}."
+        ),
+        variables=("customer_name", "security_url", "data_hora"),
+        cta_label="Proteger minha conta",
+        cta_url="{{security_url}}",
+    ),
+    _template(
+        name="Confirmar alteracao de e-mail",
+        slug="email-change-confirmation",
+        category="seguranca",
+        subject="Confirme a alteracao do seu e-mail - Bia Collections",
+        preheader="Use o codigo para confirmar seu novo endereco de e-mail.",
+        title="Confirmar novo e-mail",
+        intro="Recebemos uma solicitacao para alterar o e-mail da sua conta.",
+        body_html=(
+            "<p style=\"margin:0 0 14px;text-align:center;\">Use o codigo abaixo para confirmar:</p>"
+            "<p style=\"margin:0 0 14px;text-align:center;font-size:24px;letter-spacing:6px;\">"
+            "<strong>{{code}}</strong></p>"
+            "<p style=\"margin:0;text-align:center;\">O codigo expira em {{expires_in_minutes}} minutos. "
+            "Se nao foi voce, ignore esta mensagem.</p>"
+        ),
+        text_template=(
+            "Use o codigo {{code}} para confirmar a alteracao do seu e-mail. "
+            "Ele expira em {{expires_in_minutes}} minutos. Se nao foi voce, ignore esta mensagem."
+        ),
+        variables=("code", "expires_in_minutes", "new_email"),
+    ),
+    _template(
+        name="Novo acesso",
+        slug="new-login-alert",
+        category="seguranca",
+        subject="Novo acesso a sua conta - Bia Collections",
+        preheader="Um acesso a sua conta foi confirmado.",
+        title="Novo acesso confirmado",
+        intro="Ola {{customer_name}}, sua conta foi acessada com sucesso.",
+        body_html=(
+            "<p style=\"margin:0 0 8px;\">Data e hora: <strong>{{date_time}}</strong></p>"
+            "<p style=\"margin:0 0 8px;\">Dispositivo: <strong>{{device}}</strong></p>"
+            "<p style=\"margin:0 0 14px;\">IP aproximado: <strong>{{ip_address}}</strong></p>"
+            "<p style=\"margin:0;\">Se nao foi voce, proteja sua conta imediatamente.</p>"
+        ),
+        text_template=(
+            "Novo acesso em {{date_time}}, dispositivo {{device}}, IP {{ip_address}}. "
+            "Se nao foi voce, proteja sua conta em {{security_url}}."
+        ),
+        variables=("customer_name", "date_time", "device", "ip_address", "security_url"),
+        cta_label="Proteger minha conta",
+        cta_url="{{security_url}}",
     ),
     _template(
         name="Pedido criado",
@@ -1528,16 +1655,18 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         assunto="Seu pedido {{pedido_numero}} foi enviado",
         title="Pedido enviado",
         preheader="Seu pedido saiu para transporte.",
-        intro="Ola {{cliente_nome}}, seu pedido {{pedido_numero}} saiu para entrega.",
+        intro="Ola {{cliente_nome}}, seu pedido {{pedido_numero}} foi enviado à transportadora.",
         body_html=(
             "<p style=\"margin: 0 0 14px;\">Codigo de rastreio: <strong>{{codigo_rastreio}}</strong></p>"
-            "<p style=\"margin: 0;\">Obrigada por comprar com a {{loja_nome}}.</p>"
+            "<p style=\"margin: 0;\">O rastreamento pode levar algumas horas para receber a primeira atualização.</p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, seu pedido {{pedido_numero}} saiu para entrega. "
-            "Codigo de rastreio: {{codigo_rastreio}}. Obrigada por comprar com a {{loja_nome}}."
+            "Ola {{cliente_nome}}, seu pedido {{pedido_numero}} foi enviado à transportadora. "
+            "Codigo de rastreio: {{codigo_rastreio}}."
         ),
-        variables=("cliente_nome", "pedido_numero", "codigo_rastreio", "loja_nome", "loja_url"),
+        variables=("cliente_nome", "pedido_numero", "codigo_rastreio", "link_rastreio", "loja_nome", "loja_url"),
+        cta_label="Acompanhar entrega",
+        cta_url="{{link_rastreio}}",
     ),
     _admin_template(
         nome="Pedido entregue",
@@ -1566,8 +1695,8 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         preheader="Seu pedido foi cancelado.",
         intro="Ola {{cliente_nome}}, o pedido {{pedido_numero}} foi cancelado.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Se o pagamento ja tiver sido feito, nossa equipe acompanhara o proximo passo.</p>"
-            "<p style=\"margin: 0;\">Qualquer duvida, fale com nosso atendimento.</p>"
+            "<p style=\"margin: 0 0 14px;\">O pedido não seguirá para preparação ou envio.</p>"
+            "<p style=\"margin: 0;\">Se houve cobrança, você receberá separadamente as informações sobre o reembolso.</p>"
         ),
         text_template=(
             "Ola {{cliente_nome}}, o pedido {{pedido_numero}} foi cancelado. "
@@ -1585,7 +1714,8 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         intro="Ola {{cliente_nome}}, aprovamos o reembolso do pedido {{pedido_numero}}.",
         body_html=(
             "<p style=\"margin: 0 0 14px;\">O valor aprovado e <strong>{{valor_reembolso}}</strong>.</p>"
-            "<p style=\"margin: 0;\">O prazo de processamento pode variar conforme a forma de pagamento.</p>"
+            "<p style=\"margin: 0;\">Prazo estimado: <strong>{{prazo_reembolso}}</strong>. "
+            "A visualização final pode variar conforme a instituição financeira.</p>"
         ),
         text_template=(
             "Ola {{cliente_nome}}, aprovamos o reembolso do pedido {{pedido_numero}}. "
@@ -1620,16 +1750,27 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         preheader="Sua nota fiscal ou recibo ja esta disponivel.",
         intro="Ola {{cliente_nome}}, o documento do pedido {{pedido_numero}} ja esta disponivel.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Voce pode acessar a nota fiscal ou recibo pelos links do pedido.</p>"
-            "<p style=\"margin: 0;\">Guarde este email para consultar os dados da compra quando precisar.</p>"
+            "<p style=\"margin: 0 0 14px;\">Seu documento está disponível para consulta.</p>"
+            "<p style=\"margin: 0;\"><a href=\"{{documento_url}}\" "
+            "style=\"color:#111111;font-weight:bold;\">Abrir {{documento_tipo}}</a></p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, a nota fiscal ou recibo do pedido {{pedido_numero}} esta disponivel. "
-            "Nota fiscal: {{link_nota_fiscal}} Recibo: {{link_recibo}}."
+            "Ola {{cliente_nome}}, o documento do pedido {{pedido_numero}} esta disponivel. "
+            "Abrir {{documento_tipo}}: {{documento_url}}."
         ),
-        variables=("cliente_nome", "pedido_numero", "link_nota_fiscal", "link_recibo", "loja_nome", "loja_url"),
+        variables=(
+            "cliente_nome",
+            "pedido_numero",
+            "link_nota_fiscal",
+            "link_recibo",
+            "documento_url",
+            "documento_tipo",
+            "link_meus_pedidos",
+            "loja_nome",
+            "loja_url",
+        ),
         cta_label="Ver pedido",
-        cta_url="{{loja_url}}/conta/pedidos",
+        cta_url="{{link_meus_pedidos}}",
     ),
     _admin_template(
         nome="Troca ou devolucao recebida",
@@ -1686,24 +1827,28 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         variables=("cliente_nome", "pedido_numero", "protocolo_troca", "motivo_recusa", "loja_nome", "loja_url"),
     ),
     _admin_template(
-        nome="Recuperacao de senha",
+        nome="Recuperação de senha",
         slug="admin-default-recuperacao-senha",
         evento="recuperacao_senha",
-        assunto="Redefinicao de senha - {{loja_nome}}",
-        title="Redefinicao de senha",
-        preheader="Use o codigo enviado para criar uma nova senha.",
-        intro="Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha.",
+        assunto="Redefinição de senha - {{loja_nome}}",
+        title="Redefinição de senha",
+        preheader="Use o código enviado para criar uma nova senha.",
+        intro="Olá {{cliente_nome}}, recebemos uma solicitação para redefinir sua senha.",
         body_html=(
-            "<p style=\"margin: 0 0 14px; text-align: center;\">Use o codigo abaixo para continuar:</p>"
+            "<p style=\"margin: 0 0 14px; text-align: center;\">Use o código abaixo para continuar:</p>"
             "<p style=\"margin: 0 0 16px; text-align: center; font-size: 24px; letter-spacing: 6px; color: #111111;\">"
             "<strong>{{codigo}}</strong></p>"
-            "<p style=\"margin: 0; text-align: center;\">Este codigo expira em {{minutos_expiracao}} minutos.</p>"
+            "<p style=\"margin: 0 0 14px; text-align: center;\">Este código expira em {{minutos_expiracao}} minutos.</p>"
+            "<p style=\"margin: 0; text-align: center;\">Se você não solicitou a redefinição, "
+            "ignore esta mensagem e mantenha sua senha atual.</p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, recebemos uma solicitacao para redefinir sua senha. "
-            "Use o codigo {{codigo}}. Este codigo expira em {{minutos_expiracao}} minutos."
+            "Olá {{cliente_nome}}, recebemos uma solicitação para redefinir sua senha. "
+            "Use o código {{codigo}}. Este código expira em {{minutos_expiracao}} minutos."
         ),
         variables=("cliente_nome", "codigo", "minutos_expiracao", "loja_nome", "loja_url", "link_recuperacao"),
+        cta_label="Redefinir senha",
+        cta_url="{{link_recuperacao}}",
     ),
     _admin_template(
         nome="Código de acesso",
@@ -1717,17 +1862,14 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
             "<p style=\"margin: 0 0 16px; text-align: center; font-size: 24px; letter-spacing: 6px; color: #111111;\">"
             "<strong>{{codigo}}</strong></p>"
             "<p style=\"margin: 0 0 12px; text-align: center;\">Este código expira em {{minutos_expiracao}} minutos.</p>"
-            "<p style=\"margin: 0 0 18px; text-align: center;\">Por segurança, não compartilhe este código com ninguém.</p>"
-            "<p style=\"margin: 0; text-align: center;\">Confira nossos cupons no Instagram da loja.</p>"
+            "<p style=\"margin: 0 0 12px; text-align: center;\">Por segurança, não compartilhe este código com ninguém.</p>"
+            "<p style=\"margin: 0; text-align: center;\">Se você não tentou acessar sua conta, ignore esta mensagem.</p>"
         ),
         text_template=(
             "Seu código de acesso é: {{codigo}}. Este código expira em {{minutos_expiracao}} minutos. "
-            "Confira nossos cupons no Instagram da loja: "
-            f"{BRAND_INSTAGRAM_URL}"
+            "Se você não tentou acessar sua conta, ignore esta mensagem e não compartilhe o código."
         ),
         variables=("codigo", "minutos_expiracao", "loja_nome", "loja_url"),
-        cta_label="Ver Instagram",
-        cta_url=BRAND_INSTAGRAM_URL,
     ),
     _admin_template(
         nome="Senha alterada",
@@ -1735,35 +1877,92 @@ ADMIN_EMAIL_TEMPLATE_SEEDS: list[dict[str, Any]] = [
         evento="senha_alterada",
         assunto="Senha alterada - {{loja_nome}}",
         title="Senha alterada",
-        preheader="Confirmacao de alteracao de senha.",
-        intro="Ola {{cliente_nome}}, sua senha foi alterada com sucesso.",
+        preheader="Confirmação de alteração de senha.",
+        intro="Olá {{cliente_nome}}, sua senha foi alterada com sucesso.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Se foi voce, nenhuma acao e necessaria.</p>"
-            "<p style=\"margin: 0;\">Se nao reconhece esta alteracao, fale com nosso atendimento imediatamente.</p>"
+            "<p style=\"margin: 0 0 14px;\">Alteração concluída em <strong>{{data_hora}}</strong>.</p>"
+            "<p style=\"margin: 0;\">Se não foi você, proteja sua conta imediatamente usando o link abaixo.</p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, sua senha foi alterada com sucesso. "
-            "Se nao reconhece esta alteracao, fale com nosso atendimento imediatamente."
+            "Olá {{cliente_nome}}, sua senha foi alterada em {{data_hora}}. "
+            "Se não foi você, proteja sua conta em {{link_seguranca}}."
         ),
-        variables=("cliente_nome", "loja_nome", "loja_url"),
+        variables=("cliente_nome", "data_hora", "link_seguranca", "loja_nome", "loja_url"),
+        cta_label="Proteger minha conta",
+        cta_url="{{link_seguranca}}",
     ),
     _admin_template(
-        nome="Dados sensiveis alterados",
+        nome="Dados sensíveis alterados",
         slug="admin-default-dados-sensiveis-alterados",
         evento="dados_sensiveis_alterados",
         assunto="Dados da sua conta foram atualizados - {{loja_nome}}",
         title="Dados atualizados",
-        preheader="Uma informacao sensivel da sua conta foi alterada.",
-        intro="Ola {{cliente_nome}}, identificamos uma alteracao em dados importantes da sua conta.",
+        preheader="Uma informação sensível da sua conta foi alterada.",
+        intro="Olá {{cliente_nome}}, identificamos uma alteração em dados importantes da sua conta.",
         body_html=(
-            "<p style=\"margin: 0 0 14px;\">Tipo de alteracao: <strong>{{tipo_alteracao}}</strong>.</p>"
-            "<p style=\"margin: 0;\">Se voce nao fez essa alteracao, fale com nosso atendimento agora.</p>"
+            "<p style=\"margin: 0 0 14px;\">Tipo de alteração: <strong>{{tipo_alteracao}}</strong>.</p>"
+            "<p style=\"margin: 0 0 14px;\">Data e hora: <strong>{{data_hora}}</strong>.</p>"
+            "<p style=\"margin: 0;\">Se você não fez essa alteração, proteja sua conta imediatamente.</p>"
         ),
         text_template=(
-            "Ola {{cliente_nome}}, uma informacao sensivel da sua conta foi alterada. "
-            "Tipo de alteracao: {{tipo_alteracao}}. Se nao foi voce, fale com nosso atendimento."
+            "Olá {{cliente_nome}}, uma informação sensível da sua conta foi alterada. "
+            "Tipo de alteração: {{tipo_alteracao}} em {{data_hora}}. "
+            "Se não foi você, proteja sua conta em {{link_seguranca}}."
         ),
-        variables=("cliente_nome", "tipo_alteracao", "loja_nome", "loja_url"),
+        variables=("cliente_nome", "tipo_alteracao", "data_hora", "link_seguranca", "loja_nome", "loja_url"),
+        cta_label="Proteger minha conta",
+        cta_url="{{link_seguranca}}",
+    ),
+    _admin_template(
+        nome="Confirmar alteração de e-mail",
+        slug="admin-default-confirmacao-alteracao-email",
+        evento="confirmacao_alteracao_email",
+        assunto="Confirme a alteração do seu e-mail - {{loja_nome}}",
+        title="Confirmar novo e-mail",
+        preheader="Use o código para confirmar seu novo endereço de e-mail.",
+        intro="Olá {{cliente_nome}}, recebemos uma solicitação para alterar o e-mail da sua conta.",
+        body_html=(
+            "<p style=\"margin:0 0 14px;text-align:center;\">Use o código abaixo para confirmar:</p>"
+            "<p style=\"margin:0 0 14px;text-align:center;font-size:24px;letter-spacing:6px;\">"
+            "<strong>{{codigo}}</strong></p>"
+            "<p style=\"margin:0;text-align:center;\">O código expira em {{minutos_expiracao}} minutos. "
+            "Se não foi você, ignore esta mensagem.</p>"
+        ),
+        text_template=(
+            "Use o código {{codigo}} para confirmar a alteração do seu e-mail. "
+            "Ele expira em {{minutos_expiracao}} minutos. Se não foi você, ignore esta mensagem."
+        ),
+        variables=("cliente_nome", "codigo", "minutos_expiracao", "novo_email", "loja_nome", "loja_url"),
+    ),
+    _admin_template(
+        nome="Novo acesso",
+        slug="admin-default-novo-acesso",
+        evento="novo_acesso",
+        assunto="Novo acesso à sua conta - {{loja_nome}}",
+        title="Novo acesso confirmado",
+        preheader="Um acesso à sua conta foi confirmado.",
+        intro="Olá {{cliente_nome}}, sua conta foi acessada com sucesso.",
+        body_html=(
+            "<p style=\"margin:0 0 8px;\">Data e hora: <strong>{{data_hora}}</strong></p>"
+            "<p style=\"margin:0 0 8px;\">Dispositivo: <strong>{{dispositivo}}</strong></p>"
+            "<p style=\"margin:0 0 14px;\">IP aproximado: <strong>{{endereco_ip}}</strong></p>"
+            "<p style=\"margin:0;\">Se não foi você, proteja sua conta imediatamente.</p>"
+        ),
+        text_template=(
+            "Novo acesso em {{data_hora}}, dispositivo {{dispositivo}}, IP {{endereco_ip}}. "
+            "Se não foi você, proteja sua conta em {{link_seguranca}}."
+        ),
+        variables=(
+            "cliente_nome",
+            "data_hora",
+            "dispositivo",
+            "endereco_ip",
+            "link_seguranca",
+            "loja_nome",
+            "loja_url",
+        ),
+        cta_label="Proteger minha conta",
+        cta_url="{{link_seguranca}}",
     ),
     _admin_template(
         nome="Produto voltou ao estoque",
@@ -1970,6 +2169,8 @@ AUTOMATION_SEEDS = [
     ("password_reset", "password-reset", 0),
     ("password_changed", "password-changed", 0),
     ("two_factor_code", "two-factor-code", 0),
+    ("email_change_confirmation", "email-change-confirmation", 0),
+    ("new_login_alert", "new-login-alert", 0),
     ("order_created", "order-created", 0),
     ("payment_approved", "payment-approved", 0),
     ("payment_refused", "payment-refused", 0),
@@ -1986,7 +2187,7 @@ AUTOMATION_SEEDS = [
     ("abandoned_cart_3d", "abandoned-cart-1h", 4320),
     ("product_back_in_stock", "product-back-in-stock", 0),
     ("coupon_expiring", "coupon-expiring", 0),
-    ("review_request", "review-request", 0),
+    ("review_request", "review-request", settings.EMAIL_REVIEW_DELAY_MINUTES),
     ("support_ticket_replied", "support-ticket-replied", 0),
 ]
 
@@ -2010,6 +2211,8 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_payment_pending_template_if_old(template, data)
                 _refresh_payment_expired_template_if_old(template, data)
                 _refresh_order_summary_template_if_missing(template, data)
+                _refresh_order_flow_content_v3(template, data)
+                _refresh_security_content_v4(template, data)
                 _refresh_premium_template_if_seeded(template, data)
                 _review_existing_template_copy(template)
             templates_by_slug[data["slug"]] = template
@@ -2024,6 +2227,8 @@ def seed_email_automation(db: Session | None = None) -> None:
                 _refresh_payment_pending_template_if_old(template, data)
                 _refresh_payment_expired_template_if_old(template, data)
                 _refresh_order_summary_template_if_missing(template, data)
+                _refresh_order_flow_content_v3(template, data)
+                _refresh_security_content_v4(template, data)
                 _refresh_premium_template_if_seeded(template, data)
                 _fill_missing_admin_template_fields(template, data)
                 _review_existing_template_copy(template)
@@ -2060,6 +2265,8 @@ def seed_email_automation(db: Session | None = None) -> None:
                         is_active=True,
                     )
                 )
+            elif event_key == "review_request" and exists.delay_minutes == 0:
+                exists.delay_minutes = delay_minutes
         session.commit()
     except Exception:
         session.rollback()

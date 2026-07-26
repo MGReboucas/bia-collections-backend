@@ -8,6 +8,8 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
+
 from app.database import get_db
 from app.dependencies import (
     get_current_master_admin_user,
@@ -826,6 +828,16 @@ def atualizar_status_pedido(
     event_key = ORDER_STATUS_EMAIL_EVENTS.get(data.status)
     if event_key and old_status != data.status:
         trigger_order_email_event(db, event_key, pedido)
+        if data.status == "Entregue":
+            trigger_order_email_event(
+                db,
+                "review_request",
+                pedido,
+                extra={
+                    "review_url": f"{settings.FRONTEND_URL.rstrip('/')}/avaliacoes?pedido={pedido.numero}",
+                    "link_avaliacao": f"{settings.FRONTEND_URL.rstrip('/')}/avaliacoes?pedido={pedido.numero}",
+                },
+            )
     return {"numero": pedido.numero, "status": pedido.status}
 
 

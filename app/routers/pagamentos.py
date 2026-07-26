@@ -16,6 +16,7 @@ from app.dependencies import get_current_user
 from app.models.cupom import Cupom, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import Pedido
+from app.models.pos_venda import ReembolsoPedido
 from app.models.usuario import Usuario
 from app.modules.email.service import trigger_admin_order_paid_email, trigger_order_email_event
 from app.schemas.pedido import PagamentoCartaoRequest, PagamentoCartaoResponse
@@ -516,7 +517,18 @@ def _trigger_payment_email_event(
     *,
     pagamento: Pagamento | None = None,
 ) -> None:
-    trigger_order_email_event(db, event_key, pedido)
+    extra = None
+    if event_key == "refund_completed":
+        refund_value = float((pagamento.valor if pagamento else None) or pedido.total)
+        formatted = f"R$ {refund_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        extra = {
+            "refund_amount": formatted,
+            "valor_reembolso": formatted,
+        }
+    if extra:
+        trigger_order_email_event(db, event_key, pedido, extra=extra)
+    else:
+        trigger_order_email_event(db, event_key, pedido)
     if event_key == "payment_approved":
         trigger_admin_order_paid_email(db, pedido, pagamento=pagamento)
 
@@ -550,6 +562,25 @@ def _atualizar_pagamento_local(
             changed = True
         if novo_status_pedido == ORDER_STATUS_PAGO:
             _registrar_cupom_pagamento_aprovado(db, pedido)
+        if novo_status_pedido == ORDER_STATUS_REEMBOLSADO:
+            reembolso = (
+                db.query(ReembolsoPedido)
+                .filter(ReembolsoPedido.pedido_id == pedido.id)
+                .order_by(ReembolsoPedido.id.desc())
+                .first()
+            )
+            valor_reembolso = float(response.get("transaction_amount") or pedido.total)
+            if reembolso:
+                reembolso.status = "processado"
+                reembolso.valor = valor_reembolso
+            else:
+                db.add(
+                    ReembolsoPedido(
+                        pedido_id=pedido.id,
+                        status="processado",
+                        valor=valor_reembolso,
+                    )
+                )
 
     if not pagamento:
         pagamento = (

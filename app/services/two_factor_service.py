@@ -95,6 +95,8 @@ def create_two_factor_challenge(
     *,
     resend_window_start: datetime | None = None,
     resend_count: int = 0,
+    finalidade: str = "login",
+    valor_pendente: str | None = None,
 ) -> CreatedTwoFactorChallenge:
     now = utc_now()
     codigo = generate_two_factor_code()
@@ -111,6 +113,8 @@ def create_two_factor_challenge(
         ultimo_envio_em=now,
         reenvio_janela_inicio=resend_window_start or now,
         reenvios_na_janela=resend_count,
+        finalidade=finalidade,
+        valor_pendente=valor_pendente,
     )
     db.add(challenge)
     db.commit()
@@ -145,8 +149,16 @@ def ensure_challenge_can_be_used(db: Session, challenge: TwoFactorChallenge | No
     return challenge
 
 
-def verify_two_factor_code(db: Session, token: str, codigo: str) -> Usuario:
+def verify_two_factor_code(
+    db: Session,
+    token: str,
+    codigo: str,
+    *,
+    finalidade: str | None = None,
+) -> Usuario:
     challenge = ensure_challenge_can_be_used(db, get_open_challenge(db, token))
+    if finalidade and challenge.finalidade != finalidade:
+        raise TwoFactorExpiredError()
     user = db.query(Usuario).filter(Usuario.id == challenge.usuario_id).first()
     if not user:
         invalidate_challenge(db, challenge)
@@ -194,4 +206,6 @@ def create_resend_challenge(db: Session, token: str) -> CreatedTwoFactorChalleng
         user,
         resend_window_start=window_start,
         resend_count=resend_count + 1,
+        finalidade=challenge.finalidade,
+        valor_pendente=challenge.valor_pendente,
     )

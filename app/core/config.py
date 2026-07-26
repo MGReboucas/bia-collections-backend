@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     EMAIL_QUEUE_BACKEND: str = "auto"  # auto, rq, thread
     EMAIL_QUEUE_NAME: str = "bia-email"
+    EMAIL_SCHEDULER_ENABLED: bool = True
+    EMAIL_SCHEDULER_INTERVAL_SECONDS: int = 30
+    EMAIL_LOG_CONTENT_RETENTION_DAYS: int = 90
+    EMAIL_REVIEW_DELAY_MINUTES: int = 4320
 
     # Mercado Pago — configure in .env
     MP_ACCESS_TOKEN: str = ""

@@ -7,12 +7,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.config import settings
 from app.database import get_db
 from app.dependencies import get_current_master_admin_user
 from app.models.usuario import Usuario
-from app.modules.email.models import EmailTemplate
+from app.modules.email.models import EmailLog, EmailTemplate
 from app.modules.email.provider import EmailProvider
 from app.modules.email.service import EMAIL_STATUS_SENT, EmailAutomationService
 from app.schemas.admin_emails import (
@@ -51,6 +52,8 @@ EVENTO_TO_SLUG_PREFIX = {
     "codigo_acesso": "codigo-acesso",
     "senha_alterada": "senha-alterada",
     "dados_sensiveis_alterados": "dados-sensiveis-alterados",
+    "confirmacao_alteracao_email": "confirmacao-alteracao-email",
+    "novo_acesso": "novo-acesso",
     "produto_voltou_estoque": "produto-voltou-estoque",
     "carrinho_abandonado": "carrinho-abandonado",
     "cupom_disponivel": "cupom-disponivel",
@@ -196,6 +199,70 @@ def listar_templates_email(
         .all()
     )
     return [_template_out(template) for template in templates]
+
+
+@router.get("/metricas")
+def metricas_email(
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_master_admin_user),
+):
+    por_status = dict(
+        db.query(EmailLog.status, func.count(EmailLog.id))
+        .group_by(EmailLog.status)
+        .all()
+    )
+    por_evento = [
+        {"evento": event_key, "total": total}
+        for event_key, total in (
+            db.query(EmailLog.event_key, func.count(EmailLog.id))
+            .group_by(EmailLog.event_key)
+            .order_by(func.count(EmailLog.id).desc())
+            .limit(20)
+            .all()
+        )
+    ]
+    total = sum(por_status.values())
+    enviados = por_status.get("enviado", 0)
+    return {
+        "total": total,
+        "por_status": por_status,
+        "por_evento": por_evento,
+        "taxa_sucesso": round((enviados / total) * 100, 2) if total else 100.0,
+    }
+
+
+@router.get("/logs")
+def listar_logs_email(
+    status_log: str | None = None,
+    evento: str | None = None,
+    page: int = 1,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_master_admin_user),
+):
+    page = max(1, page)
+    limit = min(200, max(1, limit))
+    query = db.query(EmailLog).order_by(EmailLog.created_at.desc())
+    if status_log:
+        query = query.filter(EmailLog.status == status_log)
+    if evento:
+        query = query.filter(EmailLog.event_key == evento)
+    return query.offset((page - 1) * limit).limit(limit).all()
+
+
+@router.post("/logs/{log_id}/retry")
+def reenviar_log_email(
+    log_id: int,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_master_admin_user),
+):
+    log = db.query(EmailLog).filter(EmailLog.id == log_id).first()
+    if not log:
+        raise _error(404, "Log de email nao encontrado.")
+    if log.status not in {"pendente", "erro", "queued", "scheduled", "failed"}:
+        raise _error(409, "Apenas emails pendentes ou com falha podem ser reenviados.")
+    updated = EmailAutomationService(db).retry_failed_email(log_id)
+    return {"id": updated.id, "status": updated.status, "message": "Email reenfileirado."}
 
 
 @router.post("", response_model=AdminEmailTemplateOut, status_code=status.HTTP_201_CREATED)

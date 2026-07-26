@@ -90,6 +90,8 @@ ADMIN_EVENT_TO_AUTOMATION_EVENT = {
     "codigo_acesso": "two_factor_code",
     "senha_alterada": "password_changed",
     "dados_sensiveis_alterados": "sensitive_data_changed",
+    "confirmacao_alteracao_email": "email_change_confirmation",
+    "novo_acesso": "new_login_alert",
     "produto_voltou_estoque": "product_back_in_stock",
     "carrinho_abandonado": "abandoned_cart",
     "cupom_disponivel": "coupon_available",
@@ -135,10 +137,11 @@ class EmailAutomationService:
         admin_templates = self._active_admin_templates_for_event(event_key)
         if admin_templates:
             admin_event_key, admin_payload = self._admin_event_payload(event_key, payload)
+            delay_minutes = self._automation_delay_for_event(event_key)
             return self._enqueue_templates(
                 admin_event_key,
                 admin_payload,
-                [(template, 0) for template in admin_templates],
+                [(template, delay_minutes) for template in admin_templates],
             )
         if admin_event and admin_event != "manual":
             logger.warning("Email event %s ignored: no active admin template configured.", admin_event)
@@ -214,6 +217,19 @@ class EmailAutomationService:
 
     def _admin_event_for_key(self, event_key: str) -> str | None:
         return AUTOMATION_EVENT_TO_ADMIN_EVENT.get(event_key)
+
+    def _automation_delay_for_event(self, event_key: str) -> int:
+        automation = (
+            self.db.query(EmailAutomation.delay_minutes)
+            .filter(
+                EmailAutomation.event_key == event_key,
+                EmailAutomation.channel == "email",
+                EmailAutomation.is_active.is_(True),
+            )
+            .order_by(EmailAutomation.id.asc())
+            .first()
+        )
+        return max(0, automation[0]) if automation else 0
 
     def send_template_now(
         self,
@@ -484,6 +500,26 @@ class EmailAutomationService:
             if payload.get("pedido_itens_html") is not None
             else "{{order_items_html}}"
         )
+        total_placeholder = (
+            "{{pedido_total}}"
+            if payload.get("pedido_total") is not None
+            else "{{order_total}}"
+        )
+        summary_block = placeholder
+        if "pedido_total" not in html_template and "order_total" not in html_template:
+            summary_block += (
+                '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" '
+                'style="border-collapse: collapse; margin: 0 0 22px;">'
+                "<tr>"
+                '<td style="padding: 12px 0; border-top: 1px solid #eee8df; '
+                'font-family: Arial, Helvetica, sans-serif; font-size: 13px; '
+                'line-height: 20px; color: #6f675f;">Total do pedido</td>'
+                '<td align="right" style="padding: 12px 0; border-top: 1px solid #eee8df; '
+                'font-family: Arial, Helvetica, sans-serif; font-size: 15px; '
+                f'line-height: 20px; color: #111111;"><strong>{total_placeholder}</strong></td>'
+                "</tr>"
+                "</table>"
+            )
         premium_marker = 'data-bia-template-style="premium-v2"'
         marker_index = html_template.find(premium_marker)
         if marker_index >= 0:
@@ -491,20 +527,20 @@ class EmailAutomationService:
             if closing_div_index >= 0:
                 return (
                     html_template[:closing_div_index]
-                    + placeholder
+                    + summary_block
                     + html_template[closing_div_index:]
                 )
 
         footer_marker = '<tr>\n              <td style="padding: 24px 36px 36px; background:'
         summary_row = (
             '<tr><td style="padding: 0 38px 16px; font-family: Arial, Helvetica, '
-            f'sans-serif;">{placeholder}</td></tr>'
+            f'sans-serif;">{summary_block}</td></tr>'
         )
         if footer_marker in html_template:
             return html_template.replace(footer_marker, summary_row + footer_marker, 1)
         if "</body>" in html_template:
             return html_template.replace("</body>", summary_row + "</body>", 1)
-        return html_template + placeholder
+        return html_template + summary_block
 
     def enqueue_email(
         self,
@@ -621,6 +657,13 @@ class EmailAutomationService:
             else:
                 log.status = EMAIL_STATUS_ERROR
                 log.next_attempt_at = None
+                logger.error(
+                    "Email permanently failed after %s attempt(s): log_id=%s event=%s recipient=%s",
+                    log.attempts,
+                    log.id,
+                    log.event_key,
+                    log.email,
+                )
             self.db.commit()
             self.db.refresh(log)
             if log.status == EMAIL_STATUS_PENDING:
@@ -651,6 +694,26 @@ class EmailAutomationService:
 
         for log in logs:
             enqueue_email_log(log.id)
+        return len(logs)
+
+    def purge_expired_log_content(self) -> int:
+        retention_days = max(1, settings.EMAIL_LOG_CONTENT_RETENTION_DAYS)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        logs = (
+            self.db.query(EmailLog)
+            .filter(
+                EmailLog.created_at < cutoff,
+                EmailLog.status == EMAIL_STATUS_SENT,
+                EmailLog.payload_json.isnot(None),
+            )
+            .all()
+        )
+        for log in logs:
+            log.payload_json = None
+            log.html_snapshot = None
+            log.text_snapshot = None
+        if logs:
+            self.db.commit()
         return len(logs)
 
     def _render_string(self, template: str, payload: dict[str, Any], *, html_escape: bool) -> str:
@@ -764,6 +827,11 @@ def build_order_email_payload(
     order_items = _order_items_for_email(db, pedido)
     order_items_html = _order_items_email_html(order_items)
     order_items_text = _order_items_email_text(order_items)
+    tracking_url = (
+        "https://rastreamento.correios.com.br/app/index.php"
+        if pedido.codigo_rastreio
+        else orders_url
+    )
     payload: dict[str, Any] = {
         "to": customer_email,
         "email": customer_email,
@@ -783,8 +851,8 @@ def build_order_email_payload(
         "pedido_status": pedido.status,
         "tracking_code": pedido.codigo_rastreio or "",
         "codigo_rastreio": pedido.codigo_rastreio or "",
-        "tracking_url": "",
-        "link_rastreio": "",
+        "tracking_url": tracking_url,
+        "link_rastreio": tracking_url,
         "store_name": settings.STORE_NAME,
         "loja_nome": settings.STORE_NAME,
         "store_url": store_home_url,
@@ -997,7 +1065,7 @@ def _order_items_email_html(items: list[ItemPedido]) -> str:
 
     return (
         '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" '
-        'style="border-collapse: collapse; margin: 0 0 24px; border: 1px solid #e8e1d8; background: #fbfaf8;">'
+        'style="border-collapse: collapse; margin: 20px 0 24px; border: 1px solid #e8e1d8; background: #fbfaf8;">'
         '<tr><td colspan="2" style="padding: 14px 16px 0; font-family: Arial, Helvetica, sans-serif; '
         'font-size: 11px; line-height: 16px; letter-spacing: 2px; text-transform: uppercase; '
         'color: #8d7a62;">Resumo do pedido</td></tr>'

@@ -285,8 +285,7 @@ def two_factor_code_email(codigo: str) -> BrandEmailMessage:
         text=(
             f"Seu código de acesso é: {codigo}\n\n"
             "Ele expira em 10 minutos. Por segurança, não compartilhe este código com ninguém.\n\n"
-            "Confira nossos cupons no Instagram da loja: "
-            f"{BRAND_INSTAGRAM_URL}"
+            "Se você não tentou acessar ou criar uma conta, ignore este e-mail."
         ),
         html=brand_email_html(
             title="Seu código de acesso",
@@ -299,10 +298,8 @@ def two_factor_code_email(codigo: str) -> BrandEmailMessage:
                 "<p style=\"margin: 0 0 18px; text-align: center;\">"
                 "Por segurança, não compartilhe este código com ninguém.</p>"
                 "<p style=\"margin: 0; text-align: center;\">"
-                "Confira nossos cupons no Instagram da loja.</p>"
+                "Se você não tentou acessar ou criar uma conta, ignore este e-mail.</p>"
             ),
-            cta_label="Ver Instagram",
-            cta_url=BRAND_INSTAGRAM_URL,
         ),
     )
 

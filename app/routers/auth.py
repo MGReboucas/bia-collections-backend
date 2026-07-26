@@ -1,6 +1,7 @@
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -26,6 +27,7 @@ from app.services.two_factor_service import (
     TwoFactorResendTooSoonError,
     create_resend_challenge,
     create_two_factor_challenge,
+    get_open_challenge,
     verify_two_factor_code,
 )
 from app.schemas.auth import (
@@ -62,6 +64,35 @@ def _email_mascarado(email: str) -> str:
 def _frontend_url(path: str = "") -> str:
     base_url = (settings.FRONTEND_URL or settings.STORE_URL or "").rstrip("/")
     return f"{base_url}{path}" if base_url else path
+
+
+def _data_hora_local() -> str:
+    return datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+
+
+def _trigger_new_login_alert(db: Session, user: Usuario, request: Request) -> None:
+    data_hora = _data_hora_local()
+    dispositivo = request.headers.get("user-agent", "Dispositivo não identificado")[:255]
+    endereco_ip = request.client.host if request.client else "Não identificado"
+    EmailAutomationService(db).trigger_event(
+        "new_login_alert",
+        {
+            "to": user.email,
+            "email": user.email,
+            "customer_name": user.nome_completo or user.username,
+            "cliente_nome": user.nome_completo or user.username,
+            "date_time": data_hora,
+            "data_hora": data_hora,
+            "device": dispositivo,
+            "dispositivo": dispositivo,
+            "ip_address": endereco_ip,
+            "endereco_ip": endereco_ip,
+            "security_url": _frontend_url("/conta/dados"),
+            "link_seguranca": _frontend_url("/conta/dados"),
+            "user_id": user.id,
+            "dedupe_key": f"new_login_alert:{user.id}:{datetime.now(timezone.utc).isoformat()}",
+        },
+    )
 
 
 def _usuario_por_email(db: Session, email: str) -> Usuario | None:
@@ -168,7 +199,7 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuário ou senha inválidos.",
         )
-    challenge = create_two_factor_challenge(db, user)
+    challenge = create_two_factor_challenge(db, user, finalidade="cadastro")
     _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Codigo enviado por e-mail.")
 
@@ -199,15 +230,32 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
     db.commit()
     db.refresh(user)
     
-    challenge = create_two_factor_challenge(db, user)
+    challenge = create_two_factor_challenge(db, user, finalidade="login")
     _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Conta criada. Codigo enviado por e-mail.")
 
 
 @router.post("/login/verificar-2fa", response_model=TokenResponse)
-def verificar_2fa(data: VerifyTwoFactorRequest, response: Response, db: Session = Depends(get_db)):
+def verificar_2fa(
+    data: VerifyTwoFactorRequest,
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    challenge = get_open_challenge(db, data.two_factor_token)
+    finalidade = challenge.finalidade if challenge else None
+    if finalidade not in {"login", "cadastro"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Código inválido ou expirado.",
+        )
     try:
-        user = verify_two_factor_code(db, data.two_factor_token, data.codigo)
+        user = verify_two_factor_code(
+            db,
+            data.two_factor_token,
+            data.codigo,
+            finalidade=finalidade,
+        )
     except TwoFactorError as error:
         _raise_two_factor_error(error)
 
@@ -218,6 +266,15 @@ def verificar_2fa(data: VerifyTwoFactorRequest, response: Response, db: Session 
             "Falha ao disparar email de boas-vindas para %s",
             _email_mascarado(user.email),
         )
+
+    if finalidade == "login":
+        try:
+            _trigger_new_login_alert(db, user, request)
+        except Exception:
+            logger.exception(
+                "Falha ao disparar alerta de novo acesso para %s",
+                _email_mascarado(user.email),
+            )
 
     access_token, csrf_token = issue_auth_cookies(response, user)
     return _token_response(user, access_token=access_token, csrf_token=csrf_token)
@@ -374,6 +431,7 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
     user.senha_hash = get_password_hash(data.nova_senha)
     registro_valido.usado = True
     db.commit()
+    data_hora = _data_hora_local()
     try:
         EmailAutomationService(db).trigger_event(
             "password_changed",
@@ -387,6 +445,10 @@ def redefinir_senha(data: RedefinirSenhaRequest, db: Session = Depends(get_db)):
                 "loja_nome": settings.STORE_NAME,
                 "store_url": settings.STORE_URL or settings.FRONTEND_URL,
                 "loja_url": settings.STORE_URL or settings.FRONTEND_URL,
+                "date_time": data_hora,
+                "data_hora": data_hora,
+                "security_url": _frontend_url("/conta/dados"),
+                "link_seguranca": _frontend_url("/conta/dados"),
                 "dedupe_key": f"password_changed:{user.id}:{registro_valido.id}",
             },
         )

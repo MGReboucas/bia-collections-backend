@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,7 @@ from app.core.database import Base, engine
 from app.core.config import settings
 from app.core.csrf import csrf_is_valid, should_enforce_csrf
 from app.core.rate_limit import rate_limit_response_if_needed
-from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners, avaliacoes
+from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners, avaliacoes, pos_venda, admin_pos_venda
 from app.routers.admin_emails import router as admin_emails_router
 from app.modules.email.routes import router as email_admin_router
 from app.modules.email.seeds import seed_email_automation
@@ -207,12 +208,24 @@ seed_email_automation()
 
 os.makedirs("uploads", exist_ok=True)
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    from app.modules.email.tasks import start_email_scheduler, stop_email_scheduler
+
+    start_email_scheduler()
+    try:
+        yield
+    finally:
+        stop_email_scheduler()
+
+
 app = FastAPI(
     title="Bia Collections API",
     version="1.0.0",
     docs_url=None if settings.is_production else "/docs",
     redoc_url=None if settings.is_production else "/redoc",
     openapi_url=None if settings.is_production else "/openapi.json",
+    lifespan=lifespan,
 )
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -287,7 +300,9 @@ app.include_router(duvidas, prefix="/api/v1")
 app.include_router(pagamentos, prefix="/api/v1")
 app.include_router(banners, prefix="/api/v1")
 app.include_router(avaliacoes, prefix="/api/v1")
+app.include_router(pos_venda, prefix="/api/v1")
 app.include_router(admin, prefix="/api/v1")
+app.include_router(admin_pos_venda, prefix="/api/v1")
 app.include_router(admin_emails_router, prefix="/api/v1")
 app.include_router(email_admin_router, prefix="/api/v1")
 

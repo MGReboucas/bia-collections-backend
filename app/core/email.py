@@ -2,7 +2,7 @@ import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import parseaddr
+from email.utils import make_msgid, parseaddr
 
 import httpx
 
@@ -78,7 +78,7 @@ def _smtp_config() -> tuple[str, str, str]:
     return smtp_user, smtp_password, sender
 
 
-def _send_message(destinatario: str, msg: MIMEMultipart) -> None:
+def _send_message(destinatario: str, msg: MIMEMultipart) -> str | None:
     smtp_user, smtp_password, sender = _smtp_config()
     context = ssl.create_default_context()
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=EMAIL_TIMEOUT_SECONDS) as server:
@@ -87,21 +87,23 @@ def _send_message(destinatario: str, msg: MIMEMultipart) -> None:
         server.ehlo()
         server.login(smtp_user, smtp_password)
         server.sendmail(sender, [destinatario], msg.as_string())
+    return msg.get("Message-ID")
 
 
-def _send_smtp_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> None:
+def _send_smtp_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> str | None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = _sender_header()
     msg["To"] = destinatario
+    msg["Message-ID"] = make_msgid()
     if text:
         msg.attach(MIMEText(text, "plain", "utf-8"))
     if html:
         msg.attach(MIMEText(html, "html", "utf-8"))
-    _send_message(destinatario, msg)
+    return _send_message(destinatario, msg)
 
 
-def _send_resend_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> None:
+def _send_resend_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> str | None:
     api_key = _clean(settings.RESEND_API_KEY)
     sender = _sender_header()
     if not api_key or not sender:
@@ -124,9 +126,13 @@ def _send_resend_email(destinatario: str, subject: str, text: str | None = None,
             json=payload,
         )
     _raise_for_http_response("Resend", response)
+    try:
+        return str(response.json().get("id") or "") or None
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
-def _send_brevo_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> None:
+def _send_brevo_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> str | None:
     api_key = _clean(settings.BREVO_API_KEY)
     sender_email = _sender_email()
     if not api_key or not sender_email:
@@ -149,20 +155,21 @@ def _send_brevo_email(destinatario: str, subject: str, text: str | None = None, 
             json=payload,
         )
     _raise_for_http_response("Brevo", response)
+    try:
+        return str(response.json().get("messageId") or "") or None
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
-def _send_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> None:
+def _send_email(destinatario: str, subject: str, text: str | None = None, html: str | None = None) -> str | None:
     html = ensure_brand_logo_html(html)
     provider = _provider()
     if provider == "resend":
-        _send_resend_email(destinatario, subject, text=text, html=html)
-        return
+        return _send_resend_email(destinatario, subject, text=text, html=html)
     if provider == "brevo":
-        _send_brevo_email(destinatario, subject, text=text, html=html)
-        return
+        return _send_brevo_email(destinatario, subject, text=text, html=html)
     if provider == "smtp":
-        _send_smtp_email(destinatario, subject, text=text, html=html)
-        return
+        return _send_smtp_email(destinatario, subject, text=text, html=html)
     raise RuntimeError(f"Provedor de email invalido: {provider}.")
 
 

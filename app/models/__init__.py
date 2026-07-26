@@ -10,4 +10,5 @@ from app.models.duvida import Duvida  # noqa: F401
 from app.models.pagamento import Pagamento  # noqa: F401
 from app.models.avaliacao import Avaliacao, AvaliacaoFoto  # noqa: F401
 from app.models.banner import Banner  # noqa: F401
+from app.models.pos_venda import DocumentoPedido, ReembolsoPedido, SolicitacaoPosVenda  # noqa: F401
 from app.modules.email.models import EmailAutomation, EmailLog, EmailTemplate  # noqa: F401

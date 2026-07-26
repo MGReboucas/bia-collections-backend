@@ -25,6 +25,8 @@ EmailEvento = Literal[
     "codigo_acesso",
     "senha_alterada",
     "dados_sensiveis_alterados",
+    "confirmacao_alteracao_email",
+    "novo_acesso",
     "produto_voltou_estoque",
     "carrinho_abandonado",
     "cupom_disponivel",

@@ -12,3 +12,4 @@ from app.routers.pagamentos import router as pagamentos  # noqa: F401
 from app.routers.banners import router as banners  # noqa: F401
 from app.routers.avaliacoes import router as avaliacoes  # noqa: F401
 from app.routers.admin import router as admin  # noqa: F401
+from app.routers.pos_venda import admin_router as admin_pos_venda, router as pos_venda  # noqa: F401

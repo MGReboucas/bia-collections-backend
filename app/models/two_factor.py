@@ -20,5 +20,7 @@ class TwoFactorChallenge(Base):
     reenvios_na_janela = Column(Integer, nullable=False, default=0, server_default="0")
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
     atualizado_em = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    finalidade = Column(String(40), nullable=False, default="login", server_default="login", index=True)
+    valor_pendente = Column(String(255), nullable=True)
 
     usuario = relationship("Usuario", back_populates="desafios_2fa")

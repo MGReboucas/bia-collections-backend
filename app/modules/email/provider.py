@@ -14,5 +14,5 @@ class EmailProvider:
 
     def send(self, to: str, subject: str, html: str | None = None, text: str | None = None) -> EmailSendResult:
         provider = email_core._provider()  # Centralized provider selection.
-        email_core._send_email(to, subject, text=text, html=html)
-        return EmailSendResult(provider=provider)
+        provider_message_id = email_core._send_email(to, subject, text=text, html=html)
+        return EmailSendResult(provider=provider, provider_message_id=provider_message_id)
