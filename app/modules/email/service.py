@@ -50,6 +50,25 @@ _SAFE_VAR_PATTERN = re.compile(
     r"{{\s*([a-zA-Z0-9_.]+)(?:\s*\|\s*default\([^{}]*\))?\s*\|\s*safe\s*}}"
 )
 SAFE_HTML_TEMPLATE_VARIABLES = {"order_items_html", "pedido_itens_html"}
+ORDER_SUMMARY_ADMIN_EVENTS = {
+    "pedido_criado",
+    "pagamento_aprovado",
+    "pagamento_recusado",
+    "pagamento_pendente",
+    "pagamento_expirado",
+    "pedido_preparando",
+    "pedido_enviado",
+    "pedido_entregue",
+    "pedido_cancelado",
+    "reembolso_aprovado",
+    "reembolso_processado",
+    "nota_fiscal_recibo",
+    "troca_devolucao_recebida",
+    "troca_devolucao_aprovada",
+    "troca_devolucao_recusada",
+    "avaliacao_pedido",
+}
+ORDER_SUMMARY_CATEGORIES = {"pedidos", "pagamentos", "financeiro", "avaliacoes"}
 ADMIN_EVENT_TO_AUTOMATION_EVENT = {
     "boas_vindas": "user_registered",
     "pedido_criado": "order_created",
@@ -430,7 +449,8 @@ class EmailAutomationService:
         if not template:
             raise ValueError(f"Template de email nao encontrado: {template_slug}")
 
-        html_content = self._render_string(template.html_template, payload, html_escape=True)
+        html_template = self._ensure_order_summary_html(template, payload)
+        html_content = self._render_string(html_template, payload, html_escape=True)
         html_content = ensure_brand_logo_html(html_content) or ""
 
         return RenderedEmail(
@@ -439,6 +459,52 @@ class EmailAutomationService:
             html=html_content,
             text=self._render_string(template.text_template, payload, html_escape=False),
         )
+
+    def _ensure_order_summary_html(
+        self,
+        template: EmailTemplate,
+        payload: dict[str, Any],
+    ) -> str:
+        html_template = template.html_template
+        admin_event = template.evento or AUTOMATION_EVENT_TO_ADMIN_EVENT.get(template.category)
+        if (
+            admin_event not in ORDER_SUMMARY_ADMIN_EVENTS
+            and template.category not in ORDER_SUMMARY_CATEGORIES
+        ):
+            return html_template
+        if "order_items_html" in html_template or "pedido_itens_html" in html_template:
+            return html_template
+
+        items_html = payload.get("pedido_itens_html") or payload.get("order_items_html")
+        if not items_html:
+            return html_template
+
+        placeholder = (
+            "{{pedido_itens_html}}"
+            if payload.get("pedido_itens_html") is not None
+            else "{{order_items_html}}"
+        )
+        premium_marker = 'data-bia-template-style="premium-v2"'
+        marker_index = html_template.find(premium_marker)
+        if marker_index >= 0:
+            closing_div_index = html_template.find("</div>", marker_index)
+            if closing_div_index >= 0:
+                return (
+                    html_template[:closing_div_index]
+                    + placeholder
+                    + html_template[closing_div_index:]
+                )
+
+        footer_marker = '<tr>\n              <td style="padding: 24px 36px 36px; background:'
+        summary_row = (
+            '<tr><td style="padding: 0 38px 16px; font-family: Arial, Helvetica, '
+            f'sans-serif;">{placeholder}</td></tr>'
+        )
+        if footer_marker in html_template:
+            return html_template.replace(footer_marker, summary_row + footer_marker, 1)
+        if "</body>" in html_template:
+            return html_template.replace("</body>", summary_row + "</body>", 1)
+        return html_template + placeholder
 
     def enqueue_email(
         self,

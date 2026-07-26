@@ -3083,6 +3083,48 @@ def test_todos_templates_de_pedido_e_pos_venda_incluem_resumo_do_pedido():
         assert "{{pedido_total}}" in template["html_template"], template["slug"]
 
 
+def test_renderizacao_adiciona_resumo_quando_template_antigo_nao_possui_card():
+    email_service_module = importlib.import_module("app.modules.email.service")
+    template = EmailTemplate(
+        nome="Pedido em preparação antigo",
+        name="Pedido em preparação antigo",
+        slug="pedido-preparando-antigo",
+        category="pedido_preparando",
+        evento="pedido_preparando",
+        status="ativo",
+        subject="Pedido {{pedido_numero}}",
+        preheader="Seu pedido está em preparação.",
+        html_template=(
+            '<html><body><div data-bia-template-style="premium-v2">'
+            "<p>Seu pedido está sendo preparado.</p></div></body></html>"
+        ),
+        text_template="Seu pedido está sendo preparado.",
+        variables_schema="{}",
+        is_active=True,
+    )
+    summary_html = (
+        '<table><tr><td style="text-transform: uppercase;">Resumo do pedido</td></tr>'
+        "<tr><td>Produto Teste</td></tr></table>"
+    )
+
+    db = SessionLocal()
+    try:
+        rendered = email_service_module.EmailAutomationService(db).render_template(
+            template.slug,
+            {
+                "pedido_numero": "BC-1048",
+                "pedido_itens_html": summary_html,
+            },
+            template=template,
+        )
+    finally:
+        db.close()
+
+    assert "Resumo do pedido" in rendered.html
+    assert "Produto Teste" in rendered.html
+    assert rendered.html.index("Produto Teste") < rendered.html.index("</div>")
+
+
 def test_pagamento_aprovado_cartao_e_webhook_registram_logs_cliente_e_admin(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     sent, _ = patch_service_email_provider(monkeypatch)

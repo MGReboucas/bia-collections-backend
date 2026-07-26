@@ -701,8 +701,16 @@ def _refresh_order_summary_template_if_missing(template: EmailTemplate, data: di
     created_at = getattr(template, "created_at", None)
     updated_at = getattr(template, "updated_at", None)
     if created_at and updated_at and updated_at != created_at:
-        # Never replace content explicitly customized through the admin.
-        return
+        admin = data.get("evento") in ORDER_SUMMARY_ADMIN_EVENTS
+        old_seed_html = seeded_html.replace(_order_summary_block(admin=admin), "")
+        current_html_values = {
+            str(getattr(template, key, "") or "")
+            for key in ("html", "html_template")
+            if getattr(template, key, None)
+        }
+        if old_seed_html not in current_html_values:
+            # Never replace content explicitly customized through the admin.
+            return
 
     for key, value in data.items():
         if key in {"status", "is_active"}:
