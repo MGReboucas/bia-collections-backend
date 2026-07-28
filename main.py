@@ -193,6 +193,27 @@ if "email_templates" in _table_names:
                 _conn.execute(text(f"ALTER TABLE email_templates ADD COLUMN {_column_name} {_definition}"))
                 _conn.commit()
 
+if "login_2fa_challenges" in _table_names:
+    _two_factor_cols = {col["name"] for col in inspect(engine).get_columns("login_2fa_challenges")}
+    for _column_name, _definition in {
+        "finalidade": "VARCHAR(40) NOT NULL DEFAULT 'login'",
+        "valor_pendente": "VARCHAR(255)",
+    }.items():
+        if _column_name not in _two_factor_cols:
+            with engine.connect() as _conn:
+                _conn.execute(text(f"ALTER TABLE login_2fa_challenges ADD COLUMN {_column_name} {_definition}"))
+                _conn.commit()
+    _two_factor_indexes = {index["name"] for index in inspect(engine).get_indexes("login_2fa_challenges")}
+    if "ix_login_2fa_challenges_finalidade" not in _two_factor_indexes:
+        with engine.connect() as _conn:
+            _conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_login_2fa_challenges_finalidade "
+                    "ON login_2fa_challenges (finalidade)"
+                )
+            )
+            _conn.commit()
+
 if "email_logs" in _table_names:
     with engine.begin() as _conn:
         _conn.execute(text("UPDATE email_logs SET status = 'pendente' WHERE status IN ('queued', 'scheduled')"))
