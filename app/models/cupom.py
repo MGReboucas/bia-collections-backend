@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -9,7 +9,7 @@ class Cupom(Base):
     __tablename__ = "cupons"
 
     id = Column(Integer, primary_key=True, index=True)
-    codigo = Column(String(50), unique=True, nullable=False, index=True)
+    codigo = Column(String(50), nullable=False)
     descricao = Column(String(255), nullable=False)
     tipo = Column(String(20), nullable=False)  # 'porcentagem' | 'valor' | 'frete'
     valor = Column(Float, nullable=False)
@@ -19,6 +19,16 @@ class Cupom(Base):
     max_usos = Column(Integer, nullable=True)
     total_usos = Column(Integer, default=0, nullable=False)
     deletado_em = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_cupons_codigo_nao_deletado",
+            codigo,
+            unique=True,
+            postgresql_where=deletado_em.is_(None),
+            sqlite_where=deletado_em.is_(None),
+        ),
+    )
 
     usos = relationship("CupomUsado", back_populates="cupom")
     resgates = relationship("CupomResgatado", back_populates="cupom", cascade="all, delete-orphan")

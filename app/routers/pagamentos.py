@@ -491,7 +491,11 @@ def _external_reference_pagamento(response: dict, pagamento: Pagamento | None) -
 def _registrar_cupom_pagamento_aprovado(db: Session, pedido: Pedido) -> None:
     if not pedido.cupom_codigo:
         return
-    cupom = db.query(Cupom).filter(Cupom.codigo == pedido.cupom_codigo).first()
+    cupom = (
+        db.query(Cupom)
+        .filter(Cupom.codigo == pedido.cupom_codigo, Cupom.deletado_em.is_(None))
+        .first()
+    )
     if not cupom:
         return
     ja_registrado = (

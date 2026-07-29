@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
@@ -1380,7 +1381,11 @@ def criar_cupom_admin(
     current_admin: Usuario = Depends(get_current_admin),
 ):
     data.validar_valor_por_tipo()
-    exists = db.query(Cupom).filter(Cupom.codigo == data.codigo).first()
+    exists = (
+        db.query(Cupom)
+        .filter(Cupom.codigo == data.codigo, Cupom.deletado_em.is_(None))
+        .first()
+    )
     if exists:
         raise HTTPException(status_code=409, detail="Cupom já cadastrado.")
 
@@ -1396,7 +1401,11 @@ def criar_cupom_admin(
         total_usos=0,
     )
     db.add(cupom)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Cupom já cadastrado.") from exc
     db.refresh(cupom)
     try:
         trigger_new_coupon_campaign(db, cupom, created_by_id=current_admin.id)
@@ -1419,11 +1428,15 @@ def atualizar_cupom_admin(
 
     exists = (
         db.query(Cupom)
-        .filter(Cupom.codigo == data.codigo, Cupom.id != cupom_id)
+        .filter(
+            Cupom.codigo == data.codigo,
+            Cupom.id != cupom_id,
+            Cupom.deletado_em.is_(None),
+        )
         .first()
     )
     if exists:
-        raise HTTPException(status_code=409, detail="Cupom ja cadastrado.")
+        raise HTTPException(status_code=409, detail="Cupom já cadastrado.")
 
     # O código salvo na carteira da cliente precisa continuar identificando o mesmo cupom.
     possui_vinculos = (
@@ -1444,7 +1457,11 @@ def atualizar_cupom_admin(
     cupom.ativo = data.ativo
     cupom.valor_minimo_pedido = data.valor_minimo_pedido
     cupom.max_usos = data.max_usos
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Cupom já cadastrado.") from exc
     db.refresh(cupom)
     return _cupom_response(cupom)
 

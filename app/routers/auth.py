@@ -1,7 +1,7 @@
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -50,6 +50,11 @@ from app.schemas.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
+try:
+    SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
+except ZoneInfoNotFoundError:
+    SAO_PAULO_TZ = timezone(timedelta(hours=-3), name="America/Sao_Paulo")
+
 
 def _normalizar_email(email: str | None) -> str:
     return (email or "").strip().lower()
@@ -68,7 +73,7 @@ def _frontend_url(path: str = "") -> str:
 
 
 def _data_hora_local() -> str:
-    return datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+    return datetime.now(SAO_PAULO_TZ).strftime("%d/%m/%Y às %H:%M")
 
 
 def _trigger_new_login_alert(db: Session, user: Usuario, request: Request) -> None:
@@ -200,7 +205,7 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuário ou senha inválidos.",
         )
-    challenge = create_two_factor_challenge(db, user, finalidade="cadastro")
+    challenge = create_two_factor_challenge(db, user, finalidade="login")
     _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Codigo enviado por e-mail.")
 
@@ -237,7 +242,7 @@ def cadastro(request: Request, data: CadastroRequest, db: Session = Depends(get_
         source="cadastro",
     )
     
-    challenge = create_two_factor_challenge(db, user, finalidade="login")
+    challenge = create_two_factor_challenge(db, user, finalidade="cadastro")
     _send_two_factor_email(db, challenge, user.email)
     return _challenge_response(challenge, user, "Conta criada. Codigo enviado por e-mail.")
 
@@ -266,13 +271,14 @@ def verificar_2fa(
     except TwoFactorError as error:
         _raise_two_factor_error(error)
 
-    try:
-        trigger_welcome_email_event(db, user)
-    except Exception:
-        logger.exception(
-            "Falha ao disparar email de boas-vindas para %s",
-            _email_mascarado(user.email),
-        )
+    if finalidade == "cadastro":
+        try:
+            trigger_welcome_email_event(db, user)
+        except Exception:
+            logger.exception(
+                "Falha ao disparar email de boas-vindas para %s",
+                _email_mascarado(user.email),
+            )
 
     if finalidade == "login":
         try:

@@ -25,7 +25,7 @@ from app.dependencies import MASTER_ADMIN_EMAIL
 from app.models.avaliacao import Avaliacao
 from app.models.reset_senha import ResetSenha
 from app.models.banner import Banner
-from app.models.cupom import Cupom, CupomUsado
+from app.models.cupom import Cupom, CupomResgatado, CupomUsado
 from app.models.pagamento import Pagamento
 from app.models.pedido import ItemPedido, Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
@@ -219,6 +219,7 @@ def test_login_com_senha_correta_envia_codigo_e_nao_retorna_token(client, sent_2
     assert sent_2fa_codes[-1]["email"] == "cliente-2fa@example.com"
 
     challenge = get_challenge_by_token(body["two_factor_token"])
+    assert challenge.finalidade == "login"
     assert challenge.codigo_hash != sent_2fa_codes[-1]["codigo"]
     assert verify_password(sent_2fa_codes[-1]["codigo"], challenge.codigo_hash)
 
@@ -3901,6 +3902,157 @@ def test_adicionar_cupom_na_conta_nao_dispara_email(client, monkeypatch):
     assert email_logs() == []
 
 
+def test_admin_cupons_reutiliza_codigo_apos_soft_delete_com_vinculo(client):
+    create_user("master-cupom-reuso", MASTER_ADMIN_EMAIL, is_admin=True)
+    cliente_id = create_user("cliente-cupom-reuso", "cliente-cupom-reuso@example.com")
+    headers = auth_headers("master-cupom-reuso")
+    payload = {
+        "codigo": "REUSO10",
+        "descricao": "Cupom de reuso",
+        "tipo": "valor",
+        "valor": 10,
+        "validade": (date.today() + timedelta(days=7)).isoformat(),
+        "ativo": True,
+        "valor_minimo_pedido": 0,
+        "max_usos": 100,
+    }
+
+    criado = client.post("/api/v1/admin/cupons", json=payload, headers=headers)
+    assert criado.status_code == 201
+    cupom_antigo_id = criado.json()["id"]
+
+    duplicado = client.post(
+        "/api/v1/admin/cupons",
+        json={**payload, "descricao": "Cupom duplicado ativo"},
+        headers=headers,
+    )
+    assert duplicado.status_code == 409
+    assert duplicado.json()["detail"] == "Cupom já cadastrado."
+
+    db = SessionLocal()
+    try:
+        db.add(CupomResgatado(cupom_id=cupom_antigo_id, usuario_id=cliente_id))
+        db.commit()
+    finally:
+        db.close()
+
+    deletado = client.delete(f"/api/v1/admin/cupons/{cupom_antigo_id}", headers=headers)
+    assert deletado.status_code == 204
+
+    listagem_padrao = client.get("/api/v1/admin/cupons", headers=headers)
+    assert listagem_padrao.status_code == 200
+    assert cupom_antigo_id not in [cupom["id"] for cupom in listagem_padrao.json()]
+
+    listagem_com_deletados = client.get(
+        "/api/v1/admin/cupons?incluir_deletados=true",
+        headers=headers,
+    )
+    assert listagem_com_deletados.status_code == 200
+    assert cupom_antigo_id in [cupom["id"] for cupom in listagem_com_deletados.json()]
+
+    recriado = client.post(
+        "/api/v1/admin/cupons",
+        json={**payload, "descricao": "Cupom recriado"},
+        headers=headers,
+    )
+    assert recriado.status_code == 201
+    assert recriado.json()["codigo"] == "REUSO10"
+    assert recriado.json()["id"] != cupom_antigo_id
+
+    db = SessionLocal()
+    try:
+        cupons = db.query(Cupom).filter(Cupom.codigo == "REUSO10").order_by(Cupom.id.asc()).all()
+        assert len(cupons) == 2
+        assert cupons[0].id == cupom_antigo_id
+        assert cupons[0].ativo is False
+        assert cupons[0].deletado_em is not None
+        assert cupons[1].id == recriado.json()["id"]
+        assert cupons[1].deletado_em is None
+        assert (
+            db.query(CupomResgatado)
+            .filter(
+                CupomResgatado.cupom_id == cupom_antigo_id,
+                CupomResgatado.usuario_id == cliente_id,
+            )
+            .count()
+            == 1
+        )
+    finally:
+        db.close()
+
+
+def test_admin_cupons_put_ignora_codigo_soft_deletado_ao_validar_conflito(client):
+    create_user("master-cupom-put", MASTER_ADMIN_EMAIL, is_admin=True)
+    headers = auth_headers("master-cupom-put")
+    validade = date.today() + timedelta(days=7)
+    db = SessionLocal()
+    try:
+        soft_deletado = Cupom(
+            codigo="ANTIGO10",
+            descricao="Cupom antigo",
+            tipo="valor",
+            valor=10,
+            validade=validade,
+            ativo=False,
+            deletado_em=datetime.now(timezone.utc),
+        )
+        editavel = Cupom(
+            codigo="EDITAR10",
+            descricao="Cupom editavel",
+            tipo="valor",
+            valor=10,
+            validade=validade,
+            ativo=True,
+        )
+        ocupado = Cupom(
+            codigo="OCUPADO10",
+            descricao="Cupom ocupado",
+            tipo="valor",
+            valor=10,
+            validade=validade,
+            ativo=True,
+        )
+        db.add_all([soft_deletado, editavel, ocupado])
+        db.commit()
+        editavel_id = editavel.id
+    finally:
+        db.close()
+
+    permitido = client.put(
+        f"/api/v1/admin/cupons/{editavel_id}",
+        json={
+            "codigo": "ANTIGO10",
+            "descricao": "Cupom agora reaproveitado",
+            "tipo": "valor",
+            "valor": 10,
+            "validade": validade.isoformat(),
+            "ativo": True,
+            "valor_minimo_pedido": 0,
+            "max_usos": 100,
+        },
+        headers=headers,
+    )
+    assert permitido.status_code == 200
+    assert permitido.json()["codigo"] == "ANTIGO10"
+
+    conflito = client.put(
+        f"/api/v1/admin/cupons/{editavel_id}",
+        json={
+            "codigo": "OCUPADO10",
+            "descricao": "Cupom em conflito",
+            "tipo": "valor",
+            "valor": 10,
+            "validade": validade.isoformat(),
+            "ativo": True,
+            "valor_minimo_pedido": 0,
+            "max_usos": 100,
+        },
+        headers=headers,
+    )
+    assert conflito.status_code == 409
+    assert conflito.json()["detail"] == "Cupom já cadastrado."
+
+
 def test_cupom_promocional_novo_dispara_campanha_no_checkout(client, monkeypatch):
     seed_admin_email_flow(monkeypatch)
     create_user("master-cupom-campanha", MASTER_ADMIN_EMAIL, is_admin=True)
@@ -3970,6 +4122,58 @@ def test_email_boas_vindas_inclui_cupom_para_checkout(client, monkeypatch):
     assert logs[0].event_key == "boas_vindas"
     assert "BOAS-VINDAS10" in (logs[0].html_snapshot or "")
     assert "10%" in (logs[0].text_snapshot or "")
+
+
+def test_boas_vindas_so_apos_confirmar_cadastro(client, monkeypatch):
+    seed_admin_email_flow(monkeypatch)
+    patch_service_email_provider(monkeypatch)
+    create_user("cliente-login-sem-boas-vindas", "cliente-login-sem-boas-vindas@example.com")
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"login": "cliente-login-sem-boas-vindas", "senha": PASSWORD},
+    )
+    assert login.status_code == 200
+    login_token = login.json()["two_factor_token"]
+    login_challenge = get_challenge_by_token(login_token)
+    assert login_challenge.finalidade == "login"
+    login_code = json.loads(email_logs()[-1].payload_json or "{}")["codigo"]
+
+    login_verify = client.post(
+        "/api/v1/auth/login/verificar-2fa",
+        json={"two_factor_token": login_token, "codigo": login_code},
+    )
+    assert login_verify.status_code == 200
+    assert "boas_vindas" not in [log.event_key for log in email_logs()]
+
+    cadastro = client.post(
+        "/api/v1/auth/cadastro",
+        json={
+            "username": "cliente-cadastro-boas-vindas",
+            "email": "cliente-cadastro-boas-vindas@example.com",
+            "senha": PASSWORD,
+            "confirma_senha": PASSWORD,
+        },
+    )
+    assert cadastro.status_code == 201
+    cadastro_token = cadastro.json()["two_factor_token"]
+    cadastro_challenge = get_challenge_by_token(cadastro_token)
+    assert cadastro_challenge.finalidade == "cadastro"
+    assert "boas_vindas" not in [log.event_key for log in email_logs()]
+    cadastro_code = json.loads(email_logs()[-1].payload_json or "{}")["codigo"]
+
+    cadastro_verify = client.post(
+        "/api/v1/auth/login/verificar-2fa",
+        json={"two_factor_token": cadastro_token, "codigo": cadastro_code},
+    )
+
+    assert cadastro_verify.status_code == 200
+    logs = email_logs()
+    welcome_logs = [log for log in logs if log.event_key == "boas_vindas"]
+    assert len(welcome_logs) == 1
+    assert "novo_acesso" in [log.event_key for log in logs]
+    assert "BOAS-VINDAS10" in (welcome_logs[0].html_snapshot or "")
+    assert "10%" in (welcome_logs[0].text_snapshot or "")
 
 
 def test_campanha_exige_consentimento_aprovacao_rastreia_e_respeita_frequencia(client, monkeypatch):

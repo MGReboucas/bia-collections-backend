@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,6 +97,49 @@ if "deletado_em" not in _cupons_cols:
     with engine.connect() as _conn:
         _conn.execute(text(f"ALTER TABLE cupons ADD COLUMN deletado_em {deletado_em_type}"))
         _conn.commit()
+
+if engine.dialect.name in {"postgresql", "sqlite"}:
+    with engine.begin() as _conn:
+        if engine.dialect.name == "postgresql":
+            for _constraint_name in ("cupons_codigo_key", "uq_cupons_codigo", "ix_cupons_codigo"):
+                _conn.execute(text(f"ALTER TABLE cupons DROP CONSTRAINT IF EXISTS {_constraint_name}"))
+        _conn.execute(text("DROP INDEX IF EXISTS ix_cupons_codigo"))
+        _conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_cupons_codigo_nao_deletado "
+                "ON cupons (codigo) WHERE deletado_em IS NULL"
+            )
+        )
+
+_welcome_coupon_code = settings.EMAIL_WELCOME_COUPON_CODE.strip().upper()
+if _welcome_coupon_code:
+    with engine.begin() as _conn:
+        _conn.execute(
+            text(
+                """
+                INSERT INTO cupons (
+                    codigo, descricao, tipo, valor, validade, ativo,
+                    valor_minimo_pedido, total_usos
+                )
+                SELECT
+                    :codigo, :descricao, :tipo, :valor, :validade, :ativo,
+                    :valor_minimo_pedido, :total_usos
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM cupons WHERE codigo = :codigo AND deletado_em IS NULL
+                )
+                """
+            ),
+            {
+                "codigo": _welcome_coupon_code,
+                "descricao": "10% de desconto na primeira compra",
+                "tipo": "porcentagem",
+                "valor": 10.0,
+                "validade": date.today() + timedelta(days=365),
+                "ativo": True,
+                "valor_minimo_pedido": 0.0,
+                "total_usos": 0,
+            },
+        )
 
 if "banners" in set(inspect(engine).get_table_names()):
     _banners_cols = {col["name"] for col in inspect(engine).get_columns("banners")}

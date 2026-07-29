@@ -111,7 +111,7 @@ def validar_cupom_para_total(
             .first()
         )
         if ja_usado:
-            raise HTTPException(status_code=422, detail="Cupom ja utilizado.")
+            raise HTTPException(status_code=422, detail="Cupom já utilizado.")
 
     return cupom, calcular_desconto_cupom(cupom, total, valor_frete)
 

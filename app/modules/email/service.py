@@ -1393,6 +1393,7 @@ def trigger_welcome_email_event(
             else None
         )
         coupon_payload = build_coupon_email_payload(welcome_coupon, usuario) if welcome_coupon else {}
+        fallback_coupon_value = "10%" if welcome_coupon_code == "BOAS-VINDAS10" else ""
 
         payload = {
             "to": usuario.email,
@@ -1410,10 +1411,10 @@ def trigger_welcome_email_event(
 
             "store_url": store_url,
             "loja_url": store_url,
-            "welcome_coupon_code": coupon_payload.get("coupon_code", ""),
-            "cupom_boas_vindas": coupon_payload.get("cupom_codigo", ""),
-            "welcome_coupon_value": coupon_payload.get("coupon_value", ""),
-            "valor_cupom_boas_vindas": coupon_payload.get("cupom_valor", ""),
+            "welcome_coupon_code": coupon_payload.get("coupon_code") or welcome_coupon_code,
+            "cupom_boas_vindas": coupon_payload.get("cupom_codigo") or welcome_coupon_code,
+            "welcome_coupon_value": coupon_payload.get("coupon_value") or fallback_coupon_value,
+            "valor_cupom_boas_vindas": coupon_payload.get("cupom_valor") or fallback_coupon_value,
             "welcome_coupon_expires_at": coupon_payload.get("coupon_expires_at", ""),
             "validade_cupom_boas_vindas": coupon_payload.get("cupom_validade", ""),
 

@@ -65,7 +65,7 @@ def criar_template(
 ):
     exists = db.query(EmailTemplate).filter(EmailTemplate.slug == data.slug).first()
     if exists:
-        raise HTTPException(status_code=409, detail="Template ja cadastrado.")
+        raise HTTPException(status_code=409, detail="Template já cadastrado.")
     template = EmailTemplate(**data.model_dump())
     db.add(template)
     db.commit()
@@ -93,7 +93,7 @@ def editar_template(
             .first()
         )
         if duplicate:
-            raise HTTPException(status_code=409, detail="Slug ja cadastrado.")
+            raise HTTPException(status_code=409, detail="Slug já cadastrado.")
 
     for key, value in updates.items():
         setattr(template, key, value)
