@@ -778,8 +778,6 @@ def criar_pagamento_pix(
             "email": current_user.email,
         },
     }
-    _adicionar_notification_url(order_data)
-
     result_status, response = _criar_order_pix_mp(order_data, idempotency_key)
     if result_status not in (200, 201):
         raise HTTPException(
@@ -899,8 +897,6 @@ def criar_pagamento_cartao(
             ]
         },
     }
-    _adicionar_notification_url(order_data)
-
     mp_http_status, response = _criar_order_cartao_mp(order_data, idempotency_key)
     order_result = _extrair_order(response)
     transacao_criada = bool(order_result["order_id"] and order_result["payment_id"])
