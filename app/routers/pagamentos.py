@@ -67,6 +67,58 @@ def _notification_url() -> str | None:
     return f"{settings.MP_NOTIFICATION_URL.rstrip('/')}/api/v1/pagamentos/webhook"
 
 
+def _adicionar_notification_url(payload: dict) -> None:
+    notification_url = _notification_url()
+    if notification_url:
+        payload["notification_url"] = notification_url
+
+
+def _separar_nome_completo(nome_completo: str | None) -> tuple[str, str]:
+    partes = str(nome_completo or "").strip().split()
+    if not partes:
+        return "", ""
+    return partes[0], " ".join(partes[1:])
+
+
+def _payer_preferencia(usuario: Usuario, pedido: Pedido) -> dict:
+    payer: dict = {"email": usuario.email}
+    nome, sobrenome = _separar_nome_completo(usuario.nome_completo)
+    if nome:
+        payer["name"] = nome
+    if sobrenome:
+        payer["surname"] = sobrenome
+
+    address = {
+        "zip_code": pedido.endereco_cep,
+        "street_name": pedido.endereco_rua,
+        "street_number": pedido.endereco_numero,
+    }
+    if all(address.values()):
+        payer["address"] = address
+    return payer
+
+
+def _preferencia_mp_reutilizavel(sdk: mercadopago.SDK, pagamento: Pagamento) -> bool:
+    try:
+        result = sdk.preference().get(pagamento.mp_preference_id)
+    except Exception:
+        logger.exception(
+            "Falha ao validar preferencia existente do Mercado Pago. preference_id=%s",
+            pagamento.mp_preference_id,
+        )
+        return False
+
+    if result.get("status") not in (200, 201):
+        return False
+    preference = result.get("response") or {}
+    items = preference.get("items") or []
+    return bool(
+        preference.get("notification_url") == _notification_url()
+        and items
+        and all(str(item.get("description") or "").strip() for item in items)
+    )
+
+
 def _data_expiracao_pix() -> datetime:
     return datetime.now(timezone(timedelta(hours=-3))) + timedelta(hours=24)
 
@@ -355,7 +407,9 @@ def _validar_assinatura_fallback(
     if not ts or not received:
         return False
 
-    manifest = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
+    # A documentacao do Mercado Pago exige IDs alfanumericos em minusculas
+    # para a montagem do manifesto assinado (Orders usa IDs alfanumericos).
+    manifest = f"id:{data_id.lower()};request-id:{x_request_id};ts:{ts};"
     expected = hmac.new(
         secret.encode("utf-8"),
         manifest.encode("utf-8"),
@@ -724,6 +778,7 @@ def criar_pagamento_pix(
             "email": current_user.email,
         },
     }
+    _adicionar_notification_url(order_data)
 
     result_status, response = _criar_order_pix_mp(order_data, idempotency_key)
     if result_status not in (200, 201):
@@ -844,6 +899,7 @@ def criar_pagamento_cartao(
             ]
         },
     }
+    _adicionar_notification_url(order_data)
 
     mp_http_status, response = _criar_order_cartao_mp(order_data, idempotency_key)
     order_result = _extrair_order(response)
@@ -953,7 +1009,8 @@ def criar_preferencia(
         .order_by(Pagamento.id.desc())
         .first()
     )
-    if pag_existente:
+    sdk = _get_sdk()
+    if pag_existente and _preferencia_mp_reutilizavel(sdk, pag_existente):
         return {
             "checkout_url": pag_existente.checkout_url,
             "checkout_url_prod": pag_existente.checkout_url_prod,
@@ -961,19 +1018,19 @@ def criar_preferencia(
             "status": pag_existente.status,
         }
 
-    sdk = _get_sdk()
     idempotency_key = _idempotency_key(numero_pedido, "checkout")
     preference_data = {
         "items": [
             {
                 "id": pedido.numero,
                 "title": f"Bia Collections - Pedido {pedido.numero}",
+                "description": f"Compra na Bia Collections - Pedido {pedido.numero}",
                 "quantity": 1,
                 "unit_price": float(pedido.total),
                 "currency_id": "BRL",
             }
         ],
-        "payer": {"email": current_user.email},
+        "payer": _payer_preferencia(current_user, pedido),
         "external_reference": pedido.numero,
         "metadata": {
             "pedido_numero": pedido.numero,
@@ -986,9 +1043,7 @@ def criar_preferencia(
         },
         "auto_return": "approved",
     }
-    notification_url = _notification_url()
-    if notification_url:
-        preference_data["notification_url"] = notification_url
+    _adicionar_notification_url(preference_data)
 
     result = _criar_recurso_mp(sdk.preference(), preference_data, idempotency_key)
     response = result.get("response", {})
@@ -1032,7 +1087,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
 
     notification_type = _extrair_notification_type(request, data)
     payment_id = _extrair_payment_id(request, data)
-    if notification_type not in (None, "payment", "order", "merchant_order"):
+    if notification_type not in (None, "payment", "order", "orders", "merchant_order"):
         return {"status": "ignored"}
     if not payment_id:
         return {"status": "ignored"}
@@ -1041,12 +1096,28 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     if not settings.MP_ACCESS_TOKEN:
         return {"status": "ignored"}
 
-    if notification_type in {"order", "merchant_order"}:
+    if notification_type in {"order", "orders"}:
         result_status, order_response = _consultar_order_mp(payment_id)
         if result_status not in (200, 201):
             raise HTTPException(status_code=502, detail="Erro ao consultar pagamento.")
         response = _extrair_payment_from_order(order_response)
         payment_id = response["payment_id"]
+    elif notification_type == "merchant_order":
+        sdk = mercadopago.SDK(settings.MP_ACCESS_TOKEN)
+        merchant_result = sdk.merchant_order().get(payment_id)
+        merchant_order = merchant_result.get("response", {})
+        if merchant_result.get("status") not in (200, 201):
+            raise HTTPException(status_code=502, detail="Erro ao consultar pagamento.")
+        payments = merchant_order.get("payments") or []
+        if not payments:
+            return {"status": "ignored"}
+        payment_id = str(payments[-1].get("id") or "")
+        if not payment_id:
+            return {"status": "ignored"}
+        payment_result = sdk.payment().get(payment_id)
+        response = payment_result.get("response", {})
+        if payment_result.get("status") not in (200, 201):
+            raise HTTPException(status_code=502, detail="Erro ao consultar pagamento.")
     else:
         sdk = mercadopago.SDK(settings.MP_ACCESS_TOKEN)
         result = sdk.payment().get(payment_id)

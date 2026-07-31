@@ -1920,7 +1920,9 @@ def test_pagamento_pix_reutiliza_qr_code_pendente(client, monkeypatch):
     assert creates[0]["total_amount"] == "60.00"
     assert creates[0]["external_reference"] == "0000001"
     assert creates[0]["payer"] == {"email": "cliente-pix@example.com"}
-    assert "notification_url" not in creates[0]
+    assert creates[0]["notification_url"] == (
+        "https://api.example.test/api/v1/pagamentos/webhook"
+    )
     assert "metadata" not in creates[0]
     payment = creates[0]["transactions"]["payments"][0]
     assert payment["amount"] == "60.00"
@@ -2056,6 +2058,9 @@ def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkey
     assert mp_payload["description"] == "Bia Collections - Pedido 0000003"
     assert mp_payload["payer"] == payload["payer"]
     assert mp_payload["external_reference"] == "0000003"
+    assert mp_payload["notification_url"] == (
+        "https://api.example.test/api/v1/pagamentos/webhook"
+    )
     payment_method = mp_payload["transactions"]["payments"][0]["payment_method"]
     assert mp_payload["transactions"]["payments"][0]["amount"] == "112.50"
     assert payment_method == {
