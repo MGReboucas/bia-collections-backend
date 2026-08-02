@@ -1568,6 +1568,58 @@ def test_criar_pedido_inclui_frete_e_cupom_frete(client):
         db.close()
 
 
+def test_criar_pedido_persiste_campos_meta_opcionais_sem_expor_na_resposta(client):
+    create_user("cliente-meta-pedido", "cliente-meta-pedido@example.com")
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Bolsa Meta", preco=89.9, ativo=True)
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/pedidos",
+        json={
+            "itens": [{"produto_id": produto_id, "quantidade": 1}],
+            "endereco": {
+                "cep": "01001-000",
+                "rua": "Rua Teste",
+                "numero": "10",
+                "bairro": "Centro",
+                "cidade": "Sao Paulo",
+                "estado": "SP",
+            },
+            "forma_pagamento": "pix",
+            "frete": {"nome": "PAC", "prazo": "7 a 10 dias", "valor": 0.0},
+            "cupom_codigo": None,
+            "meta_event_id": "evt-pedido-123",
+            "meta_source_url": "https://www.biacollections.com/checkout",
+            "client_user_agent": "Mozilla/5.0 Test",
+        },
+        headers=auth_headers("cliente-meta-pedido"),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert "meta_event_id" not in body
+    assert "meta_fbp" not in body
+    assert "meta_fbc" not in body
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == body["numero_pedido"]).one()
+        assert pedido.meta_event_id == "evt-pedido-123"
+        assert pedido.meta_fbp is None
+        assert pedido.meta_fbc is None
+        assert pedido.meta_source_url == "https://www.biacollections.com/checkout"
+        assert pedido.client_user_agent == "Mozilla/5.0 Test"
+        assert pedido.meta_purchase_enviado_em is None
+    finally:
+        db.close()
+
+
 def test_cliente_valida_cupom_por_codigo_e_adicionar_fica_compatibilidade(client):
     create_user("cliente-cupom", "cliente-cupom@example.com")
     create_user("outra-cliente-cupom", "outra-cliente-cupom@example.com")
@@ -2081,6 +2133,137 @@ def test_pagamento_cartao_aprovado_cria_payload_e_atualiza_pedido(client, monkey
     finally:
         db.close()
     assert email_events == [("payment_approved", "0000003")]
+
+
+def test_meta_purchase_enviado_apos_cartao_aprovado_com_payload_e_idempotencia(client, monkeypatch):
+    create_user("cliente-meta-cartao", "cliente-meta-cartao@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.username == "cliente-meta-cartao").one()
+        produto = Produto(nome="Produto Meta", preco=50.0, ativo=True)
+        db.add(produto)
+        db.flush()
+        pedido = Pedido(
+            numero="0000016",
+            usuario_id=user.id,
+            status="Aguardando pagamento",
+            forma_pagamento="cartao",
+            subtotal=100.0,
+            valor_frete=10.0,
+            total=110.0,
+            meta_event_id="evt-meta-123",
+            meta_fbp="fb.1.123.abc",
+            meta_fbc="fb.1.123.click",
+            meta_source_url="https://www.biacollections.com/checkout",
+            client_user_agent="Mozilla/5.0 Test",
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            ItemPedido(
+                pedido_id=pedido.id,
+                produto_id=produto.id,
+                nome_produto=produto.nome,
+                preco_unitario=50.0,
+                quantidade=2,
+            )
+        )
+        produto_id = produto.id
+        db.commit()
+    finally:
+        db.close()
+
+    pagamentos_module = importlib.import_module("app.routers.pagamentos")
+    meta_module = importlib.import_module("app.services.meta_conversions")
+    sent_meta_payloads = []
+
+    def fake_criar_order_cartao_mp(payload, idempotency_key):
+        return 201, {
+            "id": "ord_meta_card",
+            "status": "processed",
+            "status_detail": "accredited",
+            "external_reference": "0000016",
+            "total_amount": "110.00",
+            "transactions": {
+                "payments": [
+                    {
+                        "id": "pay_meta_card",
+                        "amount": "110.00",
+                        "status": "processed",
+                        "status_detail": "accredited",
+                        "payment_method": {"id": "visa", "type": "credit_card"},
+                    }
+                ]
+            },
+        }
+
+    def fake_post_meta_events(pixel_id, access_token, payload):
+        sent_meta_payloads.append(
+            {
+                "pixel_id": pixel_id,
+                "access_token": access_token,
+                "payload": payload,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(pagamentos_module.settings, "MP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(pagamentos_module, "_criar_order_cartao_mp", fake_criar_order_cartao_mp)
+    monkeypatch.setattr(pagamentos_module, "trigger_order_email_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pagamentos_module, "trigger_admin_order_paid_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pagamentos_module, "attribute_order_conversion", lambda *args, **kwargs: None)
+    monkeypatch.setattr(meta_module.settings, "META_PIXEL_ID", "pixel-123")
+    monkeypatch.setattr(meta_module.settings, "META_ACCESS_TOKEN", "meta-token")
+    monkeypatch.setattr(meta_module, "_post_meta_events", fake_post_meta_events)
+
+    response = client.post(
+        "/api/v1/pagamentos/cartao/0000016",
+        json={
+            "token": "card-token",
+            "payment_method_id": "visa",
+            "installments": 1,
+            "transaction_amount": 110.0,
+            "payer": {
+                "email": "pagador@example.com",
+                "identification": {"type": "CPF", "number": "12345678909"},
+            },
+        },
+        headers=auth_headers("cliente-meta-cartao"),
+    )
+
+    assert response.status_code == 200
+    assert len(sent_meta_payloads) == 1
+    assert sent_meta_payloads[0]["pixel_id"] == "pixel-123"
+    assert sent_meta_payloads[0]["access_token"] == "meta-token"
+    event = sent_meta_payloads[0]["payload"]["data"][0]
+    assert event["event_name"] == "Purchase"
+    assert event["event_id"] == "evt-meta-123"
+    assert event["action_source"] == "website"
+    assert event["event_source_url"] == "https://www.biacollections.com/checkout"
+    assert event["user_data"] == {
+        "fbp": "fb.1.123.abc",
+        "fbc": "fb.1.123.click",
+        "client_user_agent": "Mozilla/5.0 Test",
+    }
+    assert event["custom_data"] == {
+        "currency": "BRL",
+        "value": 110.0,
+        "content_type": "product",
+        "content_ids": [str(produto_id)],
+        "contents": [{"id": str(produto_id), "quantity": 2, "item_price": 50.0}],
+    }
+
+    db = SessionLocal()
+    try:
+        pedido = db.query(Pedido).filter(Pedido.numero == "0000016").one()
+        pagamento = db.query(Pagamento).filter(Pagamento.pedido_numero == "0000016").one()
+        assert pedido.meta_purchase_enviado_em is not None
+        assert pedido.meta_purchase_payment_id == "pay_meta_card"
+
+        assert meta_module.send_meta_purchase_for_paid_order(db, pedido, pagamento) is False
+        assert len(sent_meta_payloads) == 1
+    finally:
+        db.close()
 
 
 def test_pagamento_cartao_sem_issuer_nao_bloqueia_checkout(client, monkeypatch):

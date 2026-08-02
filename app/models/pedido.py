@@ -29,6 +29,13 @@ class Pedido(Base):
     cupom_codigo = Column(String(50), nullable=True)
     desconto_aplicado = Column(Float, default=0.0)
     codigo_rastreio = Column(String(100), nullable=True)
+    meta_event_id = Column(String(120), nullable=True)
+    meta_fbp = Column(String(255), nullable=True)
+    meta_fbc = Column(String(255), nullable=True)
+    meta_source_url = Column(String(2048), nullable=True)
+    client_user_agent = Column(String(1024), nullable=True)
+    meta_purchase_enviado_em = Column(DateTime(timezone=True), nullable=True)
+    meta_purchase_payment_id = Column(String(100), nullable=True, index=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
 
     usuario = relationship("Usuario", back_populates="pedidos")

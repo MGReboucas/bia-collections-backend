@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     REQUIRE_MP_WEBHOOK_SECRET: Optional[bool] = None
     # URL pública do frontend (ex: https://seusite.com ou https://seusite.vercel.app)
     FRONTEND_URL: str = "http://localhost:3000"
+    META_PIXEL_ID: str = ""
+    META_ACCESS_TOKEN: str = ""
+    META_GRAPH_API_VERSION: str = "v20.0"
 
     # Cloudinary — configure in .env para storage persistente em produção
     # Obtenha em: https://cloudinary.com (free tier)

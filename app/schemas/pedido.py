@@ -38,6 +38,11 @@ class CriarPedidoRequest(BaseModel):
     forma_pagamento: str
     frete: Optional[FretePedidoRequest] = None
     cupom_codigo: Optional[str] = None
+    meta_event_id: Optional[str] = None
+    meta_fbp: Optional[str] = None
+    meta_fbc: Optional[str] = None
+    meta_source_url: Optional[str] = None
+    client_user_agent: Optional[str] = None
 
 
 class CriarPedidoResponse(BaseModel):

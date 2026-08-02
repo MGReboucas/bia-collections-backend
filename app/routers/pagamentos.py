@@ -26,6 +26,7 @@ from app.modules.email.service import (
 from app.modules.email.marketing import attribute_order_conversion
 from app.schemas.pedido import PagamentoCartaoRequest, PagamentoCartaoResponse
 from app.services.cupom_service import reservar_uso_cupom
+from app.services.meta_conversions import send_meta_purchase_for_paid_order
 from app.services.payment_status import (
     MP_TO_ORDER_STATUS,
     MP_TO_PAYMENT_STATUS,
@@ -597,6 +598,7 @@ def _trigger_payment_email_event(
     if event_key == "payment_approved":
         attribute_order_conversion(db, pedido)
         trigger_admin_order_paid_email(db, pedido, pagamento=pagamento)
+        send_meta_purchase_for_paid_order(db, pedido, pagamento=pagamento)
 
 
 def _atualizar_pagamento_local(

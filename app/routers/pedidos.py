@@ -39,6 +39,11 @@ def _preco_venda(produto: Produto) -> float:
     return produto.preco
 
 
+def _texto_opcional(value: str | None) -> str | None:
+    value = str(value or "").strip()
+    return value or None
+
+
 @router.post("", response_model=CriarPedidoResponse, status_code=status.HTTP_201_CREATED)
 def criar_pedido(
     data: CriarPedidoRequest,
@@ -118,6 +123,11 @@ def criar_pedido(
         endereco_estado=data.endereco.estado,
         cupom_codigo=cupom_codigo_aplicado,
         desconto_aplicado=desconto,
+        meta_event_id=_texto_opcional(data.meta_event_id),
+        meta_fbp=_texto_opcional(data.meta_fbp),
+        meta_fbc=_texto_opcional(data.meta_fbc),
+        meta_source_url=_texto_opcional(data.meta_source_url),
+        client_user_agent=_texto_opcional(data.client_user_agent),
     )
     db.add(pedido)
     db.flush()
