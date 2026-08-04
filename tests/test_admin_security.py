@@ -1598,7 +1598,10 @@ def test_criar_pedido_persiste_campos_meta_opcionais_sem_expor_na_resposta(clien
             "meta_source_url": "https://www.biacollections.com/checkout",
             "client_user_agent": "Mozilla/5.0 Test",
         },
-        headers=auth_headers("cliente-meta-pedido"),
+        headers={
+            **auth_headers("cliente-meta-pedido"),
+            "x-forwarded-for": "198.51.100.10",
+        },
     )
 
     assert response.status_code == 201
@@ -1615,6 +1618,7 @@ def test_criar_pedido_persiste_campos_meta_opcionais_sem_expor_na_resposta(clien
         assert pedido.meta_fbc is None
         assert pedido.meta_source_url == "https://www.biacollections.com/checkout"
         assert pedido.client_user_agent == "Mozilla/5.0 Test"
+        assert pedido.client_ip_address == "198.51.100.10"
         assert pedido.meta_purchase_enviado_em is None
     finally:
         db.close()
@@ -2140,9 +2144,12 @@ def test_meta_purchase_enviado_apos_cartao_aprovado_com_payload_e_idempotencia(c
     db = SessionLocal()
     try:
         user = db.query(Usuario).filter(Usuario.username == "cliente-meta-cartao").one()
+        user.nome_completo = "Cliente Meta"
+        user.telefone = "+55 (11) 99999-0000"
         produto = Produto(nome="Produto Meta", preco=50.0, ativo=True)
         db.add(produto)
         db.flush()
+        user_id = user.id
         pedido = Pedido(
             numero="0000016",
             usuario_id=user.id,
@@ -2151,11 +2158,15 @@ def test_meta_purchase_enviado_apos_cartao_aprovado_com_payload_e_idempotencia(c
             subtotal=100.0,
             valor_frete=10.0,
             total=110.0,
+            endereco_cep="01001-000",
+            endereco_cidade="Sao Paulo",
+            endereco_estado="SP",
             meta_event_id="evt-meta-123",
             meta_fbp="fb.1.123.abc",
             meta_fbc="fb.1.123.click",
             meta_source_url="https://www.biacollections.com/checkout",
             client_user_agent="Mozilla/5.0 Test",
+            client_ip_address="203.0.113.20",
         )
         db.add(pedido)
         db.flush()
@@ -2214,6 +2225,7 @@ def test_meta_purchase_enviado_apos_cartao_aprovado_com_payload_e_idempotencia(c
     monkeypatch.setattr(pagamentos_module, "attribute_order_conversion", lambda *args, **kwargs: None)
     monkeypatch.setattr(meta_module.settings, "META_PIXEL_ID", "pixel-123")
     monkeypatch.setattr(meta_module.settings, "META_ACCESS_TOKEN", "meta-token")
+    monkeypatch.setattr(meta_module.settings, "META_TEST_EVENT_CODE", "TEST123")
     monkeypatch.setattr(meta_module, "_post_meta_events", fake_post_meta_events)
 
     response = client.post(
@@ -2235,23 +2247,34 @@ def test_meta_purchase_enviado_apos_cartao_aprovado_com_payload_e_idempotencia(c
     assert len(sent_meta_payloads) == 1
     assert sent_meta_payloads[0]["pixel_id"] == "pixel-123"
     assert sent_meta_payloads[0]["access_token"] == "meta-token"
+    assert sent_meta_payloads[0]["payload"]["test_event_code"] == "TEST123"
     event = sent_meta_payloads[0]["payload"]["data"][0]
     assert event["event_name"] == "Purchase"
     assert event["event_id"] == "evt-meta-123"
     assert event["action_source"] == "website"
     assert event["event_source_url"] == "https://www.biacollections.com/checkout"
-    assert event["user_data"] == {
-        "fbp": "fb.1.123.abc",
-        "fbc": "fb.1.123.click",
-        "client_user_agent": "Mozilla/5.0 Test",
-    }
-    assert event["custom_data"] == {
-        "currency": "BRL",
-        "value": 110.0,
-        "content_type": "product",
-        "content_ids": [str(produto_id)],
-        "contents": [{"id": str(produto_id), "quantity": 2, "item_price": 50.0}],
-    }
+    assert event["user_data"]["fbp"] == "fb.1.123.abc"
+    assert event["user_data"]["fbc"] == "fb.1.123.click"
+    assert event["user_data"]["client_user_agent"] == "Mozilla/5.0 Test"
+    assert event["user_data"]["client_ip_address"] == "203.0.113.20"
+    assert event["user_data"]["em"] == hashlib.sha256("cliente-meta-cartao@example.com".encode()).hexdigest()
+    assert event["user_data"]["ph"] == hashlib.sha256("5511999990000".encode()).hexdigest()
+    assert event["user_data"]["fn"] == hashlib.sha256("cliente".encode()).hexdigest()
+    assert event["user_data"]["ln"] == hashlib.sha256("meta".encode()).hexdigest()
+    assert event["user_data"]["ct"] == hashlib.sha256("sao paulo".encode()).hexdigest()
+    assert event["user_data"]["st"] == hashlib.sha256("sp".encode()).hexdigest()
+    assert event["user_data"]["zp"] == hashlib.sha256("01001-000".encode()).hexdigest()
+    assert event["user_data"]["country"] == hashlib.sha256("br".encode()).hexdigest()
+    assert event["user_data"]["external_id"] == hashlib.sha256(str(user_id).encode()).hexdigest()
+    assert event["custom_data"]["currency"] == "BRL"
+    assert event["custom_data"]["value"] == 110.0
+    assert event["custom_data"]["content_type"] == "product"
+    assert event["custom_data"]["content_ids"] == [str(produto_id)]
+    assert event["custom_data"]["contents"] == [
+        {"id": str(produto_id), "quantity": 2, "item_price": 50.0, "title": "Produto Meta"}
+    ]
+    assert event["custom_data"]["num_items"] == 2
+    assert event["custom_data"]["order_id"] == "0000016"
 
     db = SessionLocal()
     try:
@@ -2264,6 +2287,154 @@ def test_meta_purchase_enviado_apos_cartao_aprovado_com_payload_e_idempotencia(c
         assert len(sent_meta_payloads) == 1
     finally:
         db.close()
+
+
+def test_meta_web_event_endpoint_envia_pageview_com_request_data(client, monkeypatch):
+    meta_module = importlib.import_module("app.services.meta_conversions")
+    sent_meta_payloads = []
+
+    def fake_post_meta_events(pixel_id, access_token, payload):
+        sent_meta_payloads.append(
+            {
+                "pixel_id": pixel_id,
+                "access_token": access_token,
+                "payload": payload,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(meta_module.settings, "META_PIXEL_ID", "pixel-123")
+    monkeypatch.setattr(meta_module.settings, "META_ACCESS_TOKEN", "meta-token")
+    monkeypatch.setattr(meta_module.settings, "META_TEST_EVENT_CODE", "TEST456")
+    monkeypatch.setattr(meta_module, "_post_meta_events", fake_post_meta_events)
+
+    response = client.post(
+        "/api/v1/meta/events",
+        json={
+            "event_name": "PageView",
+            "event_id": "evt-page-123",
+            "event_source_url": "https://www.biacollections.com/produtos",
+            "fbp": "fb.1.456.browser",
+            "fbc": "fb.1.456.click",
+        },
+        headers={
+            "user-agent": "Mozilla/5.0 PageView",
+            "x-forwarded-for": "198.51.100.77",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "event_name": "PageView",
+        "event_id": "evt-page-123",
+        "sent_to_meta": True,
+        "configured": True,
+    }
+    assert len(sent_meta_payloads) == 1
+    assert sent_meta_payloads[0]["pixel_id"] == "pixel-123"
+    assert sent_meta_payloads[0]["access_token"] == "meta-token"
+    assert sent_meta_payloads[0]["payload"]["test_event_code"] == "TEST456"
+    event = sent_meta_payloads[0]["payload"]["data"][0]
+    assert event["event_name"] == "PageView"
+    assert event["event_id"] == "evt-page-123"
+    assert event["action_source"] == "website"
+    assert event["event_source_url"] == "https://www.biacollections.com/produtos"
+    assert event["user_data"] == {
+        "fbp": "fb.1.456.browser",
+        "fbc": "fb.1.456.click",
+        "client_user_agent": "Mozilla/5.0 PageView",
+        "client_ip_address": "198.51.100.77",
+    }
+    assert "custom_data" not in event
+
+
+def test_meta_web_event_endpoint_envia_viewcontent_com_user_data_e_custom_data(client, monkeypatch):
+    user_id = create_user("cliente-meta-view", "cliente-meta-view@example.com")
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.id == user_id).one()
+        user.nome_completo = "Maria Teste"
+        user.telefone = "+55 11 98888-7777"
+        db.commit()
+    finally:
+        db.close()
+
+    meta_module = importlib.import_module("app.services.meta_conversions")
+    sent_meta_payloads = []
+
+    def fake_post_meta_events(pixel_id, access_token, payload):
+        sent_meta_payloads.append(payload)
+        return True
+
+    monkeypatch.setattr(meta_module.settings, "META_PIXEL_ID", "pixel-123")
+    monkeypatch.setattr(meta_module.settings, "META_ACCESS_TOKEN", "meta-token")
+    monkeypatch.setattr(meta_module.settings, "META_TEST_EVENT_CODE", "")
+    monkeypatch.setattr(meta_module, "_post_meta_events", fake_post_meta_events)
+
+    response = client.post(
+        "/api/v1/meta/events",
+        json={
+            "event_name": "ViewContent",
+            "event_id": "evt-view-123",
+            "event_source_url": "https://www.biacollections.com/produtos/10",
+            "user_data": {
+                "city": "Sao Paulo",
+                "state": "SP",
+                "zip_code": "01001-000",
+            },
+            "custom_data": {
+                "value": 89.9,
+                "contents": [
+                    {
+                        "id": "10",
+                        "quantity": 1,
+                        "item_price": 89.9,
+                        "title": "Bolsa Teste",
+                    }
+                ],
+                "content_name": "Bolsa Teste",
+            },
+        },
+        headers={
+            **auth_headers("cliente-meta-view"),
+            "user-agent": "Mozilla/5.0 ViewContent",
+            "x-forwarded-for": "203.0.113.55",
+        },
+    )
+
+    assert response.status_code == 200
+    event = sent_meta_payloads[0]["data"][0]
+    assert event["event_name"] == "ViewContent"
+    assert event["event_id"] == "evt-view-123"
+    assert event["user_data"]["client_ip_address"] == "203.0.113.55"
+    assert event["user_data"]["client_user_agent"] == "Mozilla/5.0 ViewContent"
+    assert event["user_data"]["em"] == hashlib.sha256("cliente-meta-view@example.com".encode()).hexdigest()
+    assert event["user_data"]["ph"] == hashlib.sha256("5511988887777".encode()).hexdigest()
+    assert event["user_data"]["fn"] == hashlib.sha256("maria".encode()).hexdigest()
+    assert event["user_data"]["ln"] == hashlib.sha256("teste".encode()).hexdigest()
+    assert event["user_data"]["ct"] == hashlib.sha256("sao paulo".encode()).hexdigest()
+    assert event["user_data"]["st"] == hashlib.sha256("sp".encode()).hexdigest()
+    assert event["user_data"]["zp"] == hashlib.sha256("01001-000".encode()).hexdigest()
+    assert event["custom_data"]["currency"] == "BRL"
+    assert event["custom_data"]["content_type"] == "product"
+    assert event["custom_data"]["content_ids"] == ["10"]
+    assert event["custom_data"]["contents"] == [
+        {"id": "10", "quantity": 1, "item_price": 89.9, "title": "Bolsa Teste"}
+    ]
+    assert event["custom_data"]["num_items"] == 1
+
+
+def test_meta_web_event_endpoint_nao_aceita_purchase_publico(client):
+    response = client.post(
+        "/api/v1/meta/events",
+        json={
+            "event_name": "Purchase",
+            "event_id": "evt-purchase-forjado",
+            "event_source_url": "https://www.biacollections.com/checkout",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_pagamento_cartao_sem_issuer_nao_bloqueia_checkout(client, monkeypatch):

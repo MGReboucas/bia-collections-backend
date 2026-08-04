@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 
@@ -21,6 +21,7 @@ from app.services.cupom_service import (
 )
 from app.services.pedido_service import gerar_numero_pedido
 from app.services.frete_service import formatar_preco
+from app.services.meta_conversions import client_ip_from_request
 from app.services.payment_status import ORDER_STATUS_AGUARDANDO, ORDER_STATUSES_OPERACIONAIS
 from app.modules.email.service import trigger_order_email_event
 
@@ -47,6 +48,7 @@ def _texto_opcional(value: str | None) -> str | None:
 @router.post("", response_model=CriarPedidoResponse, status_code=status.HTTP_201_CREATED)
 def criar_pedido(
     data: CriarPedidoRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
@@ -127,7 +129,8 @@ def criar_pedido(
         meta_fbp=_texto_opcional(data.meta_fbp),
         meta_fbc=_texto_opcional(data.meta_fbc),
         meta_source_url=_texto_opcional(data.meta_source_url),
-        client_user_agent=_texto_opcional(data.client_user_agent),
+        client_user_agent=_texto_opcional(data.client_user_agent) or _texto_opcional(request.headers.get("user-agent")),
+        client_ip_address=client_ip_from_request(request),
     )
     db.add(pedido)
     db.flush()

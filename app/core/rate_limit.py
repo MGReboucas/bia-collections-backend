@@ -47,6 +47,8 @@ def _rule_for(request: Request) -> RateLimitRule | None:
         return 8, 60
     if method == "POST" and path.startswith("/api/v1/pagamentos/") and path != "/api/v1/pagamentos/webhook":
         return 20, 60
+    if method == "POST" and path == "/api/v1/meta/events":
+        return 120, 60
     if method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith("/api/v1/admin"):
         return 60, 60
     return None

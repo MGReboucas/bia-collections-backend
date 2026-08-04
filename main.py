@@ -11,7 +11,7 @@ from app.core.database import Base, engine
 from app.core.config import settings
 from app.core.csrf import csrf_is_valid, should_enforce_csrf
 from app.core.rate_limit import rate_limit_response_if_needed
-from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, banners, avaliacoes, pos_venda, admin_pos_venda
+from app.routers import admin, auth, produtos, categorias, cep, frete, pedidos, usuario, enderecos, cupons, duvidas, pagamentos, meta_conversions, banners, avaliacoes, pos_venda, admin_pos_venda
 from app.routers.admin_emails import router as admin_emails_router
 from app.modules.email.routes import router as email_admin_router
 from app.modules.email.marketing_routes import admin_router as marketing_admin_router, router as marketing_router
@@ -46,6 +46,14 @@ for _column_name, _definition in {
     "valor_frete": "FLOAT NOT NULL DEFAULT 0",
     "tipo_frete": "VARCHAR(50)",
     "prazo_frete": "VARCHAR(100)",
+    "meta_event_id": "VARCHAR(120)",
+    "meta_fbp": "VARCHAR(255)",
+    "meta_fbc": "VARCHAR(255)",
+    "meta_source_url": "VARCHAR(2048)",
+    "client_user_agent": "VARCHAR(1024)",
+    "client_ip_address": "VARCHAR(64)",
+    "meta_purchase_enviado_em": "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "DATETIME",
+    "meta_purchase_payment_id": "VARCHAR(100)",
 }.items():
     if _column_name not in _pedidos_cols:
         with engine.connect() as _conn:
@@ -53,6 +61,16 @@ for _column_name, _definition in {
             if _column_name == "subtotal":
                 _conn.execute(text("UPDATE pedidos SET subtotal = total WHERE subtotal IS NULL"))
             _conn.commit()
+_pedidos_indexes = {index["name"] for index in inspect(engine).get_indexes("pedidos")}
+if "ix_pedidos_meta_purchase_payment_id" not in _pedidos_indexes:
+    with engine.connect() as _conn:
+        _conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_pedidos_meta_purchase_payment_id "
+                "ON pedidos (meta_purchase_payment_id)"
+            )
+        )
+        _conn.commit()
 
 if "pagamentos" in set(inspect(engine).get_table_names()):
     _pagamentos_cols = {col["name"] for col in inspect(engine).get_columns("pagamentos")}
@@ -364,6 +382,7 @@ app.include_router(enderecos, prefix="/api/v1")
 app.include_router(cupons, prefix="/api/v1")
 app.include_router(duvidas, prefix="/api/v1")
 app.include_router(pagamentos, prefix="/api/v1")
+app.include_router(meta_conversions, prefix="/api/v1")
 app.include_router(banners, prefix="/api/v1")
 app.include_router(avaliacoes, prefix="/api/v1")
 app.include_router(pos_venda, prefix="/api/v1")

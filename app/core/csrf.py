@@ -15,6 +15,7 @@ CSRF_EXEMPT_PATHS = {
     "/api/v1/auth/solicitar-redefinicao",
     "/api/v1/auth/verificar-codigo",
     "/api/v1/auth/redefinir-senha",
+    "/api/v1/meta/events",
     "/api/v1/pagamentos/webhook",
 }
 

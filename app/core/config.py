@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     META_PIXEL_ID: str = ""
     META_ACCESS_TOKEN: str = ""
+    META_TEST_EVENT_CODE: str = ""
     META_GRAPH_API_VERSION: str = "v20.0"
 
     # Cloudinary — configure in .env para storage persistente em produção

@@ -3,6 +3,7 @@ services:
     name: curadobem-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
@@ -63,6 +64,14 @@ services:
         value: "true"
       - key: FRONTEND_URL
         sync: false
+      - key: META_PIXEL_ID
+        sync: false
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_TEST_EVENT_CODE
+        sync: false
+      - key: META_GRAPH_API_VERSION
+        value: v20.0
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY

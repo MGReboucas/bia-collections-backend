@@ -34,6 +34,7 @@ class Pedido(Base):
     meta_fbc = Column(String(255), nullable=True)
     meta_source_url = Column(String(2048), nullable=True)
     client_user_agent = Column(String(1024), nullable=True)
+    client_ip_address = Column(String(64), nullable=True)
     meta_purchase_enviado_em = Column(DateTime(timezone=True), nullable=True)
     meta_purchase_payment_id = Column(String(100), nullable=True, index=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
