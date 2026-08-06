@@ -31,7 +31,7 @@ from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomResgatado, CupomUsado
 from app.models.duvida import Duvida
 from app.models.pagamento import Pagamento
-from app.models.pedido import Pedido, ItemPedido
+from app.models.pedido import Pedido
 from app.models.produto import Categoria, Produto, ProdutoImagem
 from app.models.usuario import Usuario
 from app.schemas.duvida import DuvidaOut
@@ -62,12 +62,6 @@ logger = logging.getLogger(__name__)
 
 MAX_PRODUCT_IMAGES = 10
 PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
-PRODUCT_DELETE_ORDER_HISTORY_MESSAGE = (
-    "Produto possui histórico de pedidos e não pode ser excluído; apenas ocultado."
-)
-PRODUCT_DELETE_LINKED_RECORDS_MESSAGE = (
-    "Produto possui vínculos e não pode ser excluído; apenas ocultado."
-)
 
 
 class CategoriaPayload(BaseModel):
@@ -708,6 +702,7 @@ def _produto_response(produto: Produto) -> dict:
         "imagens": imagens,
         "tamanhos": json.loads(produto.tamanhos) if produto.tamanhos else [],
         "cores": json.loads(produto.cores) if produto.cores else [],
+        "deletado_em": produto.deletado_em.isoformat() if produto.deletado_em else None,
     }
 
 
@@ -754,7 +749,11 @@ def stats(
         "total_pedidos": db.query(Pedido).count(),
         "pedidos_pendentes": pedidos_pendentes,
         "total_usuarios": db.query(Usuario).count(),
-        "total_produtos": db.query(Produto).filter(Produto.ativo.is_(True)).count(),
+        "total_produtos": (
+            db.query(Produto)
+            .filter(Produto.ativo.is_(True), Produto.deletado_em.is_(None))
+            .count()
+        ),
         "total_categorias": db.query(Categoria).count(),
         "receita_total": float(receita_total or 0),
         "receita_formatada": formatar_preco(float(receita_total or 0)),
@@ -1127,7 +1126,11 @@ def deletar_categoria(
         raise HTTPException(status_code=404, detail="Categoria não encontrada.")
     if (
         db.query(Produto)
-        .filter(Produto.categoria_id == categoria.id, Produto.ativo.is_(True))
+        .filter(
+            Produto.categoria_id == categoria.id,
+            Produto.ativo.is_(True),
+            Produto.deletado_em.is_(None),
+        )
         .first()
     ):
         raise HTTPException(status_code=409, detail="Categoria possui produtos vinculados.")
@@ -1146,6 +1149,7 @@ def listar_produtos_admin(
     busca: Optional[str] = Query(None),
     categoria_id: Optional[int] = Query(None),
     ativo: Optional[bool] = Query(None),
+    incluir_excluidos: bool = Query(False),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -1156,6 +1160,8 @@ def listar_produtos_admin(
         joinedload(Produto.imagens),
     )
 
+    if not incluir_excluidos:
+        query = query.filter(Produto.deletado_em.is_(None))
     if busca:
         query = query.filter(Produto.nome.ilike(f"%{busca}%"))
     if categoria_id is not None:
@@ -1176,6 +1182,26 @@ def listar_produtos_admin(
         "limit": limit,
         "itens": [_produto_response(produto) for produto in produtos],
     }
+
+
+@router.get("/produtos/{produto_id}")
+def detalhe_produto_admin(
+    produto_id: int,
+    incluir_excluidos: bool = Query(False),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(get_current_admin),
+):
+    query = (
+        db.query(Produto)
+        .options(joinedload(Produto.categoria), joinedload(Produto.imagens))
+        .filter(Produto.id == produto_id)
+    )
+    if not incluir_excluidos:
+        query = query.filter(Produto.deletado_em.is_(None))
+    produto = query.first()
+    if not produto:
+        raise HTTPException(status_code=404, detail="Produto não encontrado.")
+    return _produto_response(produto)
 
 
 @router.post("/produtos", status_code=status.HTTP_201_CREATED)
@@ -1255,7 +1281,7 @@ async def atualizar_produto(
     produto = (
         db.query(Produto)
         .options(joinedload(Produto.imagens))
-        .filter(Produto.id == produto_id)
+        .filter(Produto.id == produto_id, Produto.deletado_em.is_(None))
         .first()
     )
     if not produto:
@@ -1347,31 +1373,17 @@ def deletar_produto(
     db: Session = Depends(get_db),
     _: Usuario = Depends(get_current_admin),
 ):
-    produto = db.query(Produto).filter(Produto.id == produto_id).first()
+    produto = (
+        db.query(Produto)
+        .filter(Produto.id == produto_id, Produto.deletado_em.is_(None))
+        .first()
+    )
     if not produto:
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
 
-    possui_historico_pedidos = (
-        db.query(ItemPedido.id)
-        .filter(ItemPedido.produto_id == produto.id)
-        .first()
-        is not None
-    )
-    if possui_historico_pedidos:
-        raise HTTPException(
-            status_code=409,
-            detail=PRODUCT_DELETE_ORDER_HISTORY_MESSAGE,
-        )
-
-    try:
-        db.delete(produto)
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=PRODUCT_DELETE_LINKED_RECORDS_MESSAGE,
-        ) from exc
+    produto.ativo = False
+    produto.deletado_em = datetime.now(timezone.utc)
+    db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

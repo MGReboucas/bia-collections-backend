@@ -1075,7 +1075,7 @@ def test_admin_produtos_retorna_estado_real_de_visibilidade(client):
     assert produtos_publicos.json()["itens"] == []
 
 
-def test_master_admin_exclui_produto_ativo_remove_registro_e_listagem(client):
+def test_master_admin_exclui_produto_ativo_preserva_registro_e_oculta_da_listagem(client):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
     db = SessionLocal()
     try:
@@ -1096,17 +1096,39 @@ def test_master_admin_exclui_produto_ativo_remove_registro_e_listagem(client):
     assert produtos_admin.status_code == 200
     assert produtos_admin.json()["total"] == 0
     assert produtos_admin.json()["itens"] == []
+    detalhe_admin = client.get(
+        f"/api/v1/admin/produtos/{produto_id}",
+        headers=auth_headers("master"),
+    )
+    assert detalhe_admin.status_code == 404
+    auditoria_admin = client.get(
+        "/api/v1/admin/produtos?incluir_excluidos=true",
+        headers=auth_headers("master"),
+    )
+    assert auditoria_admin.status_code == 200
+    item_auditoria = auditoria_admin.json()["itens"][0]
+    assert item_auditoria["id"] == produto_id
+    assert item_auditoria["ativo"] is False
+    assert item_auditoria["deletado_em"] is not None
+    detalhe_auditoria = client.get(
+        f"/api/v1/admin/produtos/{produto_id}?incluir_excluidos=true",
+        headers=auth_headers("master"),
+    )
+    assert detalhe_auditoria.status_code == 200
+    assert detalhe_auditoria.json()["deletado_em"] is not None
     detalhe_publico = client.get(f"/api/v1/produtos/{produto_id}")
     assert detalhe_publico.status_code == 404
 
     db = SessionLocal()
     try:
-        assert db.query(Produto).filter(Produto.id == produto_id).first() is None
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.ativo is False
+        assert produto.deletado_em is not None
     finally:
         db.close()
 
 
-def test_master_admin_exclui_produto_oculto_remove_registro_e_listagem(client):
+def test_master_admin_exclui_produto_oculto_preserva_registro_e_oculta_da_listagem(client):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
     db = SessionLocal()
     try:
@@ -1127,15 +1149,23 @@ def test_master_admin_exclui_produto_oculto_remove_registro_e_listagem(client):
     assert produtos_admin.status_code == 200
     assert produtos_admin.json()["total"] == 0
     assert produtos_admin.json()["itens"] == []
+    auditoria_admin = client.get(
+        "/api/v1/admin/produtos?incluir_excluidos=true",
+        headers=auth_headers("master"),
+    )
+    assert auditoria_admin.status_code == 200
+    assert auditoria_admin.json()["itens"][0]["id"] == produto_id
 
     db = SessionLocal()
     try:
-        assert db.query(Produto).filter(Produto.id == produto_id).first() is None
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.ativo is False
+        assert produto.deletado_em is not None
     finally:
         db.close()
 
 
-def test_master_admin_nao_exclui_produto_com_historico_de_pedido(client):
+def test_master_admin_exclui_produto_com_historico_preservando_pedido(client):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
     cliente_id = create_user(
         "cliente-historico-produto",
@@ -1176,13 +1206,16 @@ def test_master_admin_nao_exclui_produto_com_historico_de_pedido(client):
         headers=auth_headers("master"),
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == admin_module.PRODUCT_DELETE_ORDER_HISTORY_MESSAGE
+    assert response.status_code == 204
 
     db = SessionLocal()
     try:
         produto = db.query(Produto).filter(Produto.id == produto_id).one()
-        assert produto.ativo is True
+        assert produto.ativo is False
+        assert produto.deletado_em is not None
+        item = db.query(ItemPedido).filter(ItemPedido.produto_id == produto_id).one()
+        assert item.nome_produto == "Produto com pedido"
+        assert item.preco_unitario == 109.9
     finally:
         db.close()
 
@@ -1628,7 +1661,7 @@ def test_master_admin_nao_exclui_categoria_com_produto_ativo(client):
     assert response.status_code == 409
 
 
-def test_master_admin_exclui_categoria_depois_de_excluir_produto(client):
+def test_master_admin_exclui_categoria_depois_de_soft_delete_do_produto(client):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
     db = SessionLocal()
     try:
@@ -1663,7 +1696,10 @@ def test_master_admin_exclui_categoria_depois_de_excluir_produto(client):
 
     db = SessionLocal()
     try:
-        assert db.query(Produto).filter(Produto.id == produto_id).first() is None
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.ativo is False
+        assert produto.deletado_em is not None
+        assert produto.categoria_id is None
         assert db.query(Categoria).filter(Categoria.id == categoria_id).first() is None
     finally:
         db.close()

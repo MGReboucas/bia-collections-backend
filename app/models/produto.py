@@ -30,6 +30,7 @@ class Produto(Base):
     estoque = Column(Integer, nullable=True)
     ativo = Column(Boolean, default=True)
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
+    deletado_em = Column(DateTime(timezone=True), nullable=True)
 
     categoria = relationship("Categoria", back_populates="produtos")
     itens_pedido = relationship("ItemPedido", back_populates="produto")

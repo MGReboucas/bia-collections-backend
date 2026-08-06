@@ -178,6 +178,15 @@ if "estoque" not in _produtos_cols:
     with engine.connect() as _conn:
         _conn.execute(text("ALTER TABLE produtos ADD COLUMN estoque INTEGER"))
         _conn.commit()
+if "deletado_em" not in _produtos_cols:
+    produto_deletado_em_type = (
+        "DATETIME" if engine.dialect.name == "sqlite" else "TIMESTAMP WITH TIME ZONE"
+    )
+    with engine.connect() as _conn:
+        _conn.execute(
+            text(f"ALTER TABLE produtos ADD COLUMN deletado_em {produto_deletado_em_type}")
+        )
+        _conn.commit()
 
 if "produto_imagens" in set(inspect(engine).get_table_names()):
     _produto_imagens_cols = {col["name"] for col in inspect(engine).get_columns("produto_imagens")}

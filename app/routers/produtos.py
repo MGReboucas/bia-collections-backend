@@ -85,7 +85,7 @@ def listar_produtos(
     query = (
         db.query(Produto)
         .options(joinedload(Produto.categoria), joinedload(Produto.imagens))
-        .filter(Produto.ativo.is_(True))
+        .filter(Produto.ativo.is_(True), Produto.deletado_em.is_(None))
     )
 
     if busca:
@@ -127,7 +127,11 @@ def detalhe_produto(produto_id: int, db: Session = Depends(get_db)):
     p = (
         db.query(Produto)
         .options(joinedload(Produto.categoria), joinedload(Produto.imagens))
-        .filter(Produto.id == produto_id, Produto.ativo.is_(True))
+        .filter(
+            Produto.id == produto_id,
+            Produto.ativo.is_(True),
+            Produto.deletado_em.is_(None),
+        )
         .first()
     )
     if not p:

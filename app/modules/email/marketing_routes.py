@@ -167,7 +167,11 @@ def subscribe_stock(
     db: Session = Depends(get_db),
     user: Usuario = Depends(get_current_user),
 ):
-    produto = db.query(Produto).filter(Produto.id == produto_id, Produto.ativo.is_(True)).first()
+    produto = db.query(Produto).filter(
+        Produto.id == produto_id,
+        Produto.ativo.is_(True),
+        Produto.deletado_em.is_(None),
+    ).first()
     if not produto:
         raise HTTPException(status_code=404, detail="Produto nao encontrado.")
     interest = db.query(ProductStockInterest).filter(

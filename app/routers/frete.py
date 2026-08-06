@@ -31,7 +31,10 @@ def calcular(data: FreteRequest, db: Session = Depends(get_db)):
 
         produto = (
             db.query(Produto)
-            .filter(Produto.id == item.produto_id)
+            .filter(
+                Produto.id == item.produto_id,
+                Produto.deletado_em.is_(None),
+            )
             .first()
         )
 

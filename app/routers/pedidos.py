@@ -58,7 +58,9 @@ def criar_pedido(
     itens_data = []
     for item in data.itens:
         produto = db.query(Produto).filter(
-            Produto.id == item.produto_id, Produto.ativo.is_(True)
+            Produto.id == item.produto_id,
+            Produto.ativo.is_(True),
+            Produto.deletado_em.is_(None),
         ).first()
         if not produto:
             raise HTTPException(
