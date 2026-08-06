@@ -22,7 +22,7 @@ import pytest
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.database import Base, SessionLocal, engine
 from app.dependencies import MASTER_ADMIN_EMAIL
-from app.models.avaliacao import Avaliacao
+from app.models.avaliacao import Avaliacao, AvaliacaoFoto
 from app.models.reset_senha import ResetSenha
 from app.models.banner import Banner
 from app.models.cupom import Cupom, CupomResgatado, CupomUsado
@@ -177,6 +177,71 @@ def create_product_review(
         return produto.id, avaliacao.id
     finally:
         db.close()
+
+
+def create_review_order(
+    *,
+    username: str,
+    email: str,
+    numero: str,
+    status_pedido: str = "Entregue",
+    produto_nome: str = "Produto Review",
+) -> tuple[int, int, str]:
+    user_id = create_user(username, email)
+    db = SessionLocal()
+    try:
+        produto = Produto(
+            nome=produto_nome,
+            descricao="Produto para avaliacao",
+            preco=99.9,
+            ativo=True,
+        )
+        db.add(produto)
+        db.flush()
+        pedido = Pedido(
+            numero=numero,
+            usuario_id=user_id,
+            status=status_pedido,
+            forma_pagamento="pix",
+            subtotal=99.9,
+            valor_frete=0.0,
+            total=99.9,
+            endereco_cep="01001-000",
+            endereco_rua="Rua Teste",
+            endereco_numero="123",
+            endereco_bairro="Centro",
+            endereco_cidade="Sao Paulo",
+            endereco_estado="SP",
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            ItemPedido(
+                pedido_id=pedido.id,
+                produto_id=produto.id,
+                nome_produto=produto.nome,
+                preco_unitario=produto.preco,
+                tamanho="Unico",
+                cor="Preto",
+                quantidade=1,
+            )
+        )
+        db.commit()
+        return user_id, produto.id, pedido.numero
+    finally:
+        db.close()
+
+
+def patch_avaliacao_upload(monkeypatch) -> list[dict[str, str]]:
+    uploads: list[dict[str, str]] = []
+    service_module = importlib.import_module("app.services.avaliacao_service")
+
+    async def fake_upload(file, folder: str = "avaliacoes") -> str:
+        uploads.append({"filename": file.filename or "", "folder": folder})
+        return f"/uploads/{folder}/{len(uploads)}-{file.filename or 'foto.png'}"
+
+    monkeypatch.setattr(service_module, "upload_image", fake_upload)
+    return uploads
 
 
 def test_admin_usuarios_sem_token_recebe_401(client):
@@ -3088,6 +3153,378 @@ def test_assinatura_webhook_fallback_valida_hmac():
     )
 
 
+def test_avaliacao_exige_usuario_autenticado(client):
+    _, produto_id, numero = create_review_order(
+        username="cliente-review-auth",
+        email="cliente-review-auth@example.com",
+        numero="REV-AUTH",
+    )
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "5",
+            "comentario": "Gostei muito.",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_avaliacao_envio_valido_com_comentario(client):
+    username = "cliente-review-comentario"
+    _, produto_id, numero = create_review_order(
+        username=username,
+        email="cliente-review-comentario@example.com",
+        numero="REV-COMENTARIO",
+    )
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "5",
+            "comentario": "  Vestiu muito bem.  ",
+        },
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["produto_id"] == produto_id
+    assert body["pedido_numero"] == numero
+    assert body["nota"] == 5
+    assert body["comentario"] == "Vestiu muito bem."
+    assert body["status"] == "pendente"
+    assert body["mostrar_home"] is False
+    assert body["exibir_home"] is False
+    assert body["destaque_home"] is False
+    assert body["fotos"] == []
+
+    detalhe = client.get(f"/api/v1/pedidos/{numero}", headers=auth_headers(username))
+    assert detalhe.status_code == 200
+    item = detalhe.json()["itens"][0]
+    assert item["avaliacao_id"] == body["id"]
+    assert item["avaliacao_status"] == "pendente"
+    assert item["avaliado"] is True
+    assert item["ja_avaliado"] is True
+    assert item["pode_avaliar"] is False
+
+
+def test_avaliacao_envio_valido_com_foto(client, monkeypatch):
+    username = "cliente-review-foto"
+    _, produto_id, numero = create_review_order(
+        username=username,
+        email="cliente-review-foto@example.com",
+        numero="REV-FOTO",
+    )
+    uploads = patch_avaliacao_upload(monkeypatch)
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "4",
+        },
+        files=[("fotos", ("look.png", PNG_BYTES, "image/png"))],
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["comentario"] is None
+    assert body["status"] == "pendente"
+    assert body["fotos"] == ["/uploads/avaliacoes/1-look.png"]
+    assert uploads == [{"filename": "look.png", "folder": "avaliacoes"}]
+
+
+def test_avaliacao_bloqueia_sem_comentario_e_sem_foto(client):
+    username = "cliente-review-vazio"
+    _, produto_id, numero = create_review_order(
+        username=username,
+        email="cliente-review-vazio@example.com",
+        numero="REV-VAZIO",
+    )
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "5",
+            "comentario": "   ",
+        },
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 422
+    assert "comentario" in response.json()["detail"]
+    assert "foto" in response.json()["detail"]
+
+
+def test_avaliacao_bloqueia_pedido_de_outro_usuario(client):
+    _, produto_id, numero = create_review_order(
+        username="cliente-review-dono",
+        email="cliente-review-dono@example.com",
+        numero="REV-OUTRO-USUARIO",
+    )
+    create_user("cliente-review-invasor", "cliente-review-invasor@example.com")
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "5",
+            "comentario": "Produto excelente.",
+        },
+        headers=auth_headers("cliente-review-invasor"),
+    )
+
+    assert response.status_code == 403
+    assert "nao pertence" in response.json()["detail"]
+
+
+def test_avaliacao_bloqueia_pedido_nao_entregue(client):
+    username = "cliente-review-nao-entregue"
+    _, produto_id, numero = create_review_order(
+        username=username,
+        email="cliente-review-nao-entregue@example.com",
+        numero="REV-NAO-ENTREGUE",
+        status_pedido="Preparando",
+    )
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "5",
+            "comentario": "Quero avaliar antes.",
+        },
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 409
+    assert "entregue" in response.json()["detail"]
+
+
+def test_avaliacao_bloqueia_produto_fora_do_pedido(client):
+    username = "cliente-review-produto-fora"
+    _, _, numero = create_review_order(
+        username=username,
+        email="cliente-review-produto-fora@example.com",
+        numero="REV-PRODUTO-FORA",
+    )
+    db = SessionLocal()
+    try:
+        outro_produto = Produto(
+            nome="Produto fora do pedido",
+            descricao="Nao foi comprado",
+            preco=49.9,
+            ativo=True,
+        )
+        db.add(outro_produto)
+        db.commit()
+        db.refresh(outro_produto)
+        outro_produto_id = outro_produto.id
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(outro_produto_id),
+            "pedido_numero": numero,
+            "nota": "4",
+            "comentario": "Nao deveria passar.",
+        },
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 422
+    assert "Produto nao pertence" in response.json()["detail"]
+
+
+def test_avaliacao_bloqueia_duplicidade(client):
+    username = "cliente-review-duplicado"
+    _, produto_id, numero = create_review_order(
+        username=username,
+        email="cliente-review-duplicado@example.com",
+        numero="REV-DUPLICADO",
+    )
+    payload = {
+        "produto_id": str(produto_id),
+        "pedido_numero": numero,
+        "nota": "5",
+        "comentario": "Primeira avaliacao.",
+    }
+
+    first = client.post("/api/v1/avaliacoes", data=payload, headers=auth_headers(username))
+    second = client.post(
+        "/api/v1/avaliacoes",
+        data={**payload, "comentario": "Tentando duplicar."},
+        headers=auth_headers(username),
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert "ja avaliado" in second.json()["detail"]
+
+
+def test_admin_modera_avaliacao_pendente_para_aprovada_e_reprovada(client):
+    create_user("master-review-moderacao", MASTER_ADMIN_EMAIL, is_admin=True)
+    _, aprovar_id = create_product_review(
+        produto_nome="Review Moderacao Aprovar",
+        username="cliente-review-moderacao-aprovar",
+        email="cliente-review-moderacao-aprovar@example.com",
+        status="pendente",
+    )
+    _, reprovar_id = create_product_review(
+        produto_nome="Review Moderacao Reprovar",
+        username="cliente-review-moderacao-reprovar",
+        email="cliente-review-moderacao-reprovar@example.com",
+        status="pendente",
+    )
+    headers = auth_headers("master-review-moderacao")
+
+    aprovada = client.put(
+        f"/api/v1/admin/avaliacoes/{aprovar_id}/status",
+        json={"status": "aprovada"},
+        headers=headers,
+    )
+    reprovada = client.put(
+        f"/api/v1/admin/avaliacoes/{reprovar_id}/status",
+        json={"status": "reprovada"},
+        headers=headers,
+    )
+
+    assert aprovada.status_code == 200
+    assert aprovada.json()["status"] == "aprovada"
+    assert reprovada.status_code == 200
+    assert reprovada.json()["status"] == "reprovada"
+    assert reprovada.json()["mostrar_home"] is False
+
+
+def test_publico_lista_somente_avaliacoes_aprovadas(client):
+    _, aprovada_id = create_product_review(
+        produto_nome="Review Publica Aprovada",
+        username="cliente-review-publica-aprovada",
+        email="cliente-review-publica-aprovada@example.com",
+        status="aprovada",
+    )
+    create_product_review(
+        produto_nome="Review Publica Pendente",
+        username="cliente-review-publica-pendente",
+        email="cliente-review-publica-pendente@example.com",
+        status="pendente",
+    )
+    create_product_review(
+        produto_nome="Review Publica Reprovada",
+        username="cliente-review-publica-reprovada",
+        email="cliente-review-publica-reprovada@example.com",
+        status="reprovada",
+    )
+
+    response = client.get("/api/v1/avaliacoes?status=aprovada")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [aprovada_id]
+
+
+def test_publico_filtra_destaques_home_por_aliases(client):
+    _, featured_id = create_product_review(
+        produto_nome="Review Destaque Alias",
+        username="cliente-review-destaque-alias",
+        email="cliente-review-destaque-alias@example.com",
+        status="aprovada",
+        mostrar_home=True,
+    )
+    create_product_review(
+        produto_nome="Review Sem Destaque Alias",
+        username="cliente-review-sem-destaque-alias",
+        email="cliente-review-sem-destaque-alias@example.com",
+        status="aprovada",
+        mostrar_home=False,
+    )
+
+    exibir = client.get("/api/v1/avaliacoes?exibir_home=true")
+    destaque = client.get("/api/v1/avaliacoes?destaque_home=true")
+
+    assert exibir.status_code == 200
+    assert destaque.status_code == 200
+    assert [item["id"] for item in exibir.json()] == [featured_id]
+    assert [item["id"] for item in destaque.json()] == [featured_id]
+    assert exibir.json()[0]["mostrar_home"] is True
+    assert exibir.json()[0]["exibir_home"] is True
+    assert exibir.json()[0]["destaque_home"] is True
+
+
+def test_admin_home_aceita_alias_e_persiste_mostrar_home(client):
+    create_user("master-review-home-alias", MASTER_ADMIN_EMAIL, is_admin=True)
+    _, avaliacao_id = create_product_review(
+        produto_nome="Review Home Alias Admin",
+        username="cliente-review-home-alias-admin",
+        email="cliente-review-home-alias-admin@example.com",
+        status="aprovada",
+    )
+
+    response = client.put(
+        f"/api/v1/admin/avaliacoes/{avaliacao_id}/home",
+        json={"exibir_home": True},
+        headers=auth_headers("master-review-home-alias"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mostrar_home"] is True
+    assert body["exibir_home"] is True
+    assert body["destaque_home"] is True
+
+
+def test_avaliacao_deduplica_fotos_e_imagens_juntos(client, monkeypatch):
+    username = "cliente-review-dedup"
+    _, produto_id, numero = create_review_order(
+        username=username,
+        email="cliente-review-dedup@example.com",
+        numero="REV-DEDUP",
+    )
+    uploads = patch_avaliacao_upload(monkeypatch)
+
+    response = client.post(
+        "/api/v1/avaliacoes",
+        data={
+            "produto_id": str(produto_id),
+            "pedido_numero": numero,
+            "nota": "5",
+        },
+        files=[
+            ("fotos", ("duplicada.png", PNG_BYTES, "image/png")),
+            ("imagens", ("duplicada.png", PNG_BYTES, "image/png")),
+        ],
+        headers=auth_headers(username),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["fotos"] == ["/uploads/avaliacoes/1-duplicada.png"]
+    assert len(uploads) == 1
+
+    db = SessionLocal()
+    try:
+        assert (
+            db.query(AvaliacaoFoto)
+            .filter(AvaliacaoFoto.avaliacao_id == body["id"])
+            .count()
+        ) == 1
+    finally:
+        db.close()
+
+
 def test_admin_marca_avaliacao_aprovada_para_home(client):
     create_user("master-home", MASTER_ADMIN_EMAIL, is_admin=True)
     _, avaliacao_id = create_product_review(
@@ -3682,6 +4119,9 @@ def test_pedido_entregue_agenda_avaliacao_para_tres_dias(client, monkeypatch):
     review = next(log for log in logs if log.event_key == "avaliacao_pedido")
     assert delivered.next_attempt_at is None
     assert review.next_attempt_at is not None
+    review_payload = json.loads(review.payload_json or "{}")
+    assert review_payload["link_avaliacao"].endswith("/conta/pedidos/REVIEW3001")
+    assert "/avaliacoes?pedido=" not in review_payload["link_avaliacao"]
     delay = review.next_attempt_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
     assert timedelta(days=2, hours=23) < delay <= timedelta(days=3, minutes=1)
 

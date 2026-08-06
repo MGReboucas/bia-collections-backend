@@ -858,6 +858,7 @@ def build_order_email_payload(
     order_total = _format_email_money(pedido.total)
     store_home_url = _store_url()
     orders_url = _store_url("/meus-pedidos")
+    review_url = _store_url(f"/conta/pedidos/{pedido.numero}")
     order_items = _order_items_for_email(db, pedido)
     order_items_html = _order_items_email_html(order_items)
     order_items_text = _order_items_email_text(order_items)
@@ -895,6 +896,8 @@ def build_order_email_payload(
         "loja_home_url": store_home_url,
         "orders_url": orders_url,
         "link_meus_pedidos": orders_url,
+        "review_url": review_url,
+        "link_avaliacao": review_url,
         "instagram_url": BRAND_INSTAGRAM_URL,
         "loja_instagram_url": BRAND_INSTAGRAM_URL,
         "payment_link": "",

@@ -24,6 +24,8 @@ def listar_avaliacoes_publico(
     produto_id: Optional[int] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=100),
     mostrar_home: Optional[bool] = Query(None),
+    exibir_home: Optional[bool] = Query(None),
+    destaque_home: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
 ):
     query = (
@@ -35,9 +37,18 @@ def listar_avaliacoes_publico(
         return []
     if produto_id is not None:
         query = query.filter(Avaliacao.produto_id == produto_id)
-    if mostrar_home is True:
+
+    home_filter = next(
+        (
+            value
+            for value in (mostrar_home, exibir_home, destaque_home)
+            if value is not None
+        ),
+        None,
+    )
+    if home_filter is True:
         query = query.filter(Avaliacao.mostrar_home.is_(True))
-    elif mostrar_home is False:
+    elif home_filter is False:
         query = query.filter(Avaliacao.mostrar_home.is_(False))
     if limit is not None:
         query = query.limit(limit)
@@ -48,7 +59,7 @@ def listar_avaliacoes_publico(
 async def criar_avaliacao(
     produto_id: int = Form(...),
     nota: int = Form(...),
-    pedido_numero: Optional[str] = Form(None),
+    pedido_numero: str = Form(...),
     comentario: Optional[str] = Form(None),
     fotos: List[UploadFile] | None = File(None),
     imagens: List[UploadFile] | None = File(None),

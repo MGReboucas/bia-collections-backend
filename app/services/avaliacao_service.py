@@ -1,3 +1,6 @@
+import hashlib
+import unicodedata
+
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session, joinedload
 
@@ -15,12 +18,13 @@ from app.services.upload_service import (
 )
 
 MAX_AVALIACAO_FOTOS = 4
+MAX_AVALIACAO_COMENTARIO = 1000
 AVALIACAO_IMAGE_FOLDER = "avaliacoes"
 AVALIACAO_STATUS_VALUES = {"pendente", "aprovada", "reprovada"}
 AVALIACAO_STATUS_PUBLICO = "aprovada"
 AVALIACAO_STATUS_INICIAL = "pendente"
 AVALIACAO_STATUS_ADMIN_UPDATE = {"aprovada", "reprovada"}
-ORDER_STATUSES_AVALIAVEIS = {"entregue", "concluido", "concluído", "finalizado"}
+ORDER_STATUSES_AVALIAVEIS = {"entregue", "concluido", "finalizado"}
 
 
 def clean_optional_text(value: str | None) -> str | None:
@@ -31,7 +35,9 @@ def clean_optional_text(value: str | None) -> str | None:
 
 
 def is_order_delivered(status: str | None) -> bool:
-    return (status or "").strip().lower() in ORDER_STATUSES_AVALIAVEIS
+    normalized = unicodedata.normalize("NFKD", (status or "").strip().lower())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return normalized in ORDER_STATUSES_AVALIAVEIS
 
 
 def uploaded_files(*groups: list[UploadFile] | None) -> list[UploadFile]:
@@ -39,6 +45,20 @@ def uploaded_files(*groups: list[UploadFile] | None) -> list[UploadFile]:
     for group in groups:
         files.extend(file for file in group or [] if file and file.filename)
     return files
+
+
+async def deduplicate_upload_files(files: list[UploadFile]) -> list[UploadFile]:
+    unique_files: list[UploadFile] = []
+    seen: set[str] = set()
+    for file in files:
+        contents = await file.read()
+        digest = hashlib.sha256(contents).hexdigest()
+        await file.seek(0)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        unique_files.append(file)
+    return unique_files
 
 
 def infer_upload_content_type(file: UploadFile) -> str:
@@ -127,6 +147,8 @@ def avaliacao_response(avaliacao: Avaliacao) -> dict:
         "comentario": avaliacao.comentario,
         "status": avaliacao.status,
         "mostrar_home": bool(avaliacao.mostrar_home),
+        "exibir_home": bool(avaliacao.mostrar_home),
+        "destaque_home": bool(avaliacao.mostrar_home),
         "fotos": fotos,
         "imagens": fotos,
         "criado_em": avaliacao.criado_em.isoformat() if avaliacao.criado_em else "",
@@ -140,6 +162,40 @@ def find_order_for_review(
     produto_id: int,
     pedido_numero: str | None,
 ) -> Pedido:
+    if pedido_numero:
+        pedido = (
+            db.query(Pedido)
+            .filter(
+                Pedido.numero == pedido_numero,
+                Pedido.usuario_id == usuario_id,
+            )
+            .first()
+        )
+        if not pedido:
+            raise HTTPException(
+                status_code=403,
+                detail="Pedido nao pertence ao usuario autenticado.",
+            )
+        if not is_order_delivered(pedido.status):
+            raise HTTPException(
+                status_code=409,
+                detail="Avaliacao permitida apenas para pedido entregue, concluido ou finalizado.",
+            )
+        item = (
+            db.query(ItemPedido.id)
+            .filter(
+                ItemPedido.pedido_id == pedido.id,
+                ItemPedido.produto_id == produto_id,
+            )
+            .first()
+        )
+        if not item:
+            raise HTTPException(
+                status_code=422,
+                detail="Produto nao pertence a este pedido.",
+            )
+        return pedido
+
     query = (
         db.query(Pedido)
         .join(ItemPedido)
@@ -148,20 +204,6 @@ def find_order_for_review(
             ItemPedido.produto_id == produto_id,
         )
     )
-
-    if pedido_numero:
-        pedido = query.filter(Pedido.numero == pedido_numero).first()
-        if not pedido:
-            raise HTTPException(
-                status_code=403,
-                detail="Pedido nao pertence ao usuario ou nao contem este produto.",
-            )
-        if not is_order_delivered(pedido.status):
-            raise HTTPException(
-                status_code=409,
-                detail="Avaliacao permitida apenas para pedido entregue, concluido ou finalizado.",
-            )
-        return pedido
 
     pedidos = query.order_by(Pedido.criado_em.desc()).all()
     if not pedidos:
@@ -202,13 +244,14 @@ def ensure_review_not_duplicate(
     usuario_id: int,
     produto_id: int,
     pedido_id: int,
+    pedido_numero: str,
 ) -> None:
     exists = (
         db.query(Avaliacao.id)
         .filter(
             Avaliacao.usuario_id == usuario_id,
             Avaliacao.produto_id == produto_id,
-            Avaliacao.pedido_id == pedido_id,
+            (Avaliacao.pedido_numero == pedido_numero) | (Avaliacao.pedido_id == pedido_id),
         )
         .first()
     )
@@ -239,8 +282,25 @@ async def create_avaliacao(
     if nota < 1 or nota > 5:
         raise HTTPException(status_code=422, detail="Nota deve ser entre 1 e 5.")
 
+    comentario_limpo = clean_optional_text(comentario)
+    if comentario_limpo and len(comentario_limpo) > MAX_AVALIACAO_COMENTARIO:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Comentario deve ter no maximo {MAX_AVALIACAO_COMENTARIO} caracteres.",
+        )
+
+    unique_files = await deduplicate_upload_files(files)
+    if not comentario_limpo and not unique_files:
+        raise HTTPException(
+            status_code=422,
+            detail="Envie um comentario ou ao menos uma foto para avaliar o produto.",
+        )
+
     ensure_product_exists(db, produto_id)
     pedido_numero_limpo = clean_optional_text(pedido_numero)
+    if not pedido_numero_limpo:
+        raise HTTPException(status_code=422, detail="pedido_numero e obrigatorio.")
+
     pedido = find_order_for_review(
         db=db,
         usuario_id=current_user.id,
@@ -252,16 +312,17 @@ async def create_avaliacao(
         usuario_id=current_user.id,
         produto_id=produto_id,
         pedido_id=pedido.id,
+        pedido_numero=pedido.numero,
     )
 
-    image_urls = await save_avaliacao_images(files)
+    image_urls = await save_avaliacao_images(unique_files)
     avaliacao = Avaliacao(
         produto_id=produto_id,
         usuario_id=current_user.id,
         pedido_id=pedido.id,
         pedido_numero=pedido.numero,
         nota=nota,
-        comentario=clean_optional_text(comentario),
+        comentario=comentario_limpo,
         status=AVALIACAO_STATUS_INICIAL,
     )
     avaliacao.fotos = [

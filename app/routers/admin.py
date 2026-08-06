@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -156,7 +156,25 @@ class AvaliacaoStatusPayload(BaseModel):
 
 
 class AvaliacaoHomePayload(BaseModel):
-    mostrar_home: bool
+    mostrar_home: Optional[bool] = None
+    exibir_home: Optional[bool] = None
+    destaque_home: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def home_informado(self):
+        if (
+            self.mostrar_home is None
+            and self.exibir_home is None
+            and self.destaque_home is None
+        ):
+            raise ValueError("Informe mostrar_home, exibir_home ou destaque_home.")
+        return self
+
+    def valor_mostrar_home(self) -> bool:
+        for value in (self.mostrar_home, self.exibir_home, self.destaque_home):
+            if value is not None:
+                return value
+        return False
 
 
 class BannerOrdemPayload(BaseModel):
@@ -838,8 +856,8 @@ def atualizar_status_pedido(
                 "review_request",
                 pedido,
                 extra={
-                    "review_url": f"{settings.FRONTEND_URL.rstrip('/')}/avaliacoes?pedido={pedido.numero}",
-                    "link_avaliacao": f"{settings.FRONTEND_URL.rstrip('/')}/avaliacoes?pedido={pedido.numero}",
+                    "review_url": f"{settings.FRONTEND_URL.rstrip('/')}/conta/pedidos/{pedido.numero}",
+                    "link_avaliacao": f"{settings.FRONTEND_URL.rstrip('/')}/conta/pedidos/{pedido.numero}",
                 },
             )
     return {"numero": pedido.numero, "status": pedido.status}
@@ -1571,7 +1589,7 @@ def atualizar_home_avaliacao(
             detail="Apenas avaliacoes aprovadas podem aparecer na home.",
         )
 
-    avaliacao.mostrar_home = data.mostrar_home
+    avaliacao.mostrar_home = data.valor_mostrar_home()
     db.commit()
     return avaliacao_response(
         avaliacao_query(db).filter(Avaliacao.id == avaliacao_id).first()

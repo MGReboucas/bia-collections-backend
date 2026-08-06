@@ -11,7 +11,7 @@ class Avaliacao(Base):
         UniqueConstraint(
             "produto_id",
             "usuario_id",
-            "pedido_id",
+            "pedido_numero",
             name="uq_avaliacoes_produto_usuario_pedido",
         ),
     )

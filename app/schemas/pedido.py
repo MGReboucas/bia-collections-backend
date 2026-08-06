@@ -131,6 +131,11 @@ class ItemPedidoDetalhe(BaseModel):
     tamanho: Optional[str] = None
     cor: Optional[str] = None
     quantidade: int
+    avaliacao_id: Optional[int] = None
+    avaliacao_status: Optional[str] = None
+    avaliado: bool = False
+    ja_avaliado: bool = False
+    pode_avaliar: bool = False
 
 
 class PedidoDetalhe(BaseModel):

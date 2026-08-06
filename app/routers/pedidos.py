@@ -5,6 +5,7 @@ from typing import List
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.usuario import Usuario
+from app.models.avaliacao import Avaliacao
 from app.models.produto import Produto
 from app.models.pedido import Pedido, ItemPedido
 from app.models.cupom import Cupom
@@ -23,6 +24,7 @@ from app.services.pedido_service import gerar_numero_pedido
 from app.services.frete_service import formatar_preco
 from app.services.meta_conversions import client_ip_from_request
 from app.services.payment_status import ORDER_STATUS_AGUARDANDO, ORDER_STATUSES_OPERACIONAIS
+from app.services.avaliacao_service import is_order_delivered
 from app.modules.email.service import trigger_order_email_event
 
 router = APIRouter(prefix="/pedidos", tags=["pedidos"])
@@ -216,6 +218,27 @@ def detalhe_pedido(
         cidade=pedido.endereco_cidade,
         estado=pedido.endereco_estado,
     )
+    produto_ids = [item.produto_id for item in pedido.itens]
+    avaliacoes = []
+    if produto_ids:
+        avaliacoes = (
+            db.query(Avaliacao)
+            .filter(
+                Avaliacao.usuario_id == current_user.id,
+                Avaliacao.produto_id.in_(produto_ids),
+                (
+                    (Avaliacao.pedido_id == pedido.id)
+                    | (Avaliacao.pedido_numero == pedido.numero)
+                ),
+            )
+            .order_by(Avaliacao.criado_em.desc(), Avaliacao.id.desc())
+            .all()
+        )
+    avaliacao_por_produto = {}
+    for avaliacao in avaliacoes:
+        avaliacao_por_produto.setdefault(avaliacao.produto_id, avaliacao)
+
+    pedido_avaliavel = is_order_delivered(pedido.status)
     itens = [
         ItemPedidoDetalhe(
             produto_id=i.produto_id,
@@ -225,6 +248,15 @@ def detalhe_pedido(
             tamanho=i.tamanho,
             cor=i.cor,
             quantidade=i.quantidade,
+            avaliacao_id=avaliacao_por_produto[i.produto_id].id
+            if i.produto_id in avaliacao_por_produto
+            else None,
+            avaliacao_status=avaliacao_por_produto[i.produto_id].status
+            if i.produto_id in avaliacao_por_produto
+            else None,
+            avaliado=i.produto_id in avaliacao_por_produto,
+            ja_avaliado=i.produto_id in avaliacao_por_produto,
+            pode_avaliar=pedido_avaliavel and i.produto_id not in avaliacao_por_produto,
         )
         for i in pedido.itens
     ]
