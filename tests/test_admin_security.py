@@ -1075,6 +1075,118 @@ def test_admin_produtos_retorna_estado_real_de_visibilidade(client):
     assert produtos_publicos.json()["itens"] == []
 
 
+def test_master_admin_exclui_produto_ativo_remove_registro_e_listagem(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Produto ativo para excluir", preco=79.9, ativo=True)
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    response = client.delete(
+        f"/api/v1/admin/produtos/{produto_id}",
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 204
+    produtos_admin = client.get("/api/v1/admin/produtos", headers=auth_headers("master"))
+    assert produtos_admin.status_code == 200
+    assert produtos_admin.json()["total"] == 0
+    assert produtos_admin.json()["itens"] == []
+    detalhe_publico = client.get(f"/api/v1/produtos/{produto_id}")
+    assert detalhe_publico.status_code == 404
+
+    db = SessionLocal()
+    try:
+        assert db.query(Produto).filter(Produto.id == produto_id).first() is None
+    finally:
+        db.close()
+
+
+def test_master_admin_exclui_produto_oculto_remove_registro_e_listagem(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Produto oculto para excluir", preco=89.9, ativo=False)
+        db.add(produto)
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    response = client.delete(
+        f"/api/v1/admin/produtos/{produto_id}",
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 204
+    produtos_admin = client.get("/api/v1/admin/produtos", headers=auth_headers("master"))
+    assert produtos_admin.status_code == 200
+    assert produtos_admin.json()["total"] == 0
+    assert produtos_admin.json()["itens"] == []
+
+    db = SessionLocal()
+    try:
+        assert db.query(Produto).filter(Produto.id == produto_id).first() is None
+    finally:
+        db.close()
+
+
+def test_master_admin_nao_exclui_produto_com_historico_de_pedido(client):
+    create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
+    cliente_id = create_user(
+        "cliente-historico-produto",
+        "cliente-historico-produto@example.com",
+    )
+    db = SessionLocal()
+    try:
+        produto = Produto(nome="Produto com pedido", preco=109.9, ativo=True)
+        db.add(produto)
+        db.flush()
+        pedido = Pedido(
+            numero="0000991",
+            usuario_id=cliente_id,
+            status="Entregue",
+            forma_pagamento="pix",
+            subtotal=109.9,
+            valor_frete=0.0,
+            total=109.9,
+        )
+        db.add(pedido)
+        db.flush()
+        db.add(
+            ItemPedido(
+                pedido_id=pedido.id,
+                produto_id=produto.id,
+                nome_produto=produto.nome,
+                preco_unitario=produto.preco,
+                quantidade=1,
+            )
+        )
+        db.commit()
+        produto_id = produto.id
+    finally:
+        db.close()
+
+    response = client.delete(
+        f"/api/v1/admin/produtos/{produto_id}",
+        headers=auth_headers("master"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == admin_module.PRODUCT_DELETE_ORDER_HISTORY_MESSAGE
+
+    db = SessionLocal()
+    try:
+        produto = db.query(Produto).filter(Produto.id == produto_id).one()
+        assert produto.ativo is True
+    finally:
+        db.close()
+
+
 def test_master_admin_atualiza_produto_substitui_galeria_e_remove_antigas(client, monkeypatch):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
     db = SessionLocal()
@@ -1516,7 +1628,7 @@ def test_master_admin_nao_exclui_categoria_com_produto_ativo(client):
     assert response.status_code == 409
 
 
-def test_master_admin_exclui_categoria_depois_de_soft_delete_dos_produtos(client):
+def test_master_admin_exclui_categoria_depois_de_excluir_produto(client):
     create_user("master", MASTER_ADMIN_EMAIL, is_admin=True)
     db = SessionLocal()
     try:
@@ -1551,9 +1663,7 @@ def test_master_admin_exclui_categoria_depois_de_soft_delete_dos_produtos(client
 
     db = SessionLocal()
     try:
-        produto = db.query(Produto).filter(Produto.id == produto_id).one()
-        assert produto.ativo is False
-        assert produto.categoria_id is None
+        assert db.query(Produto).filter(Produto.id == produto_id).first() is None
         assert db.query(Categoria).filter(Categoria.id == categoria_id).first() is None
     finally:
         db.close()

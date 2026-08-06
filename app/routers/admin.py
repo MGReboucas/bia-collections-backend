@@ -62,6 +62,12 @@ logger = logging.getLogger(__name__)
 
 MAX_PRODUCT_IMAGES = 10
 PRODUCT_IMAGE_FOLDER = "bia-collections/produtos"
+PRODUCT_DELETE_ORDER_HISTORY_MESSAGE = (
+    "Produto possui histórico de pedidos e não pode ser excluído; apenas ocultado."
+)
+PRODUCT_DELETE_LINKED_RECORDS_MESSAGE = (
+    "Produto possui vínculos e não pode ser excluído; apenas ocultado."
+)
 
 
 class CategoriaPayload(BaseModel):
@@ -1345,8 +1351,27 @@ def deletar_produto(
     if not produto:
         raise HTTPException(status_code=404, detail="Produto não encontrado.")
 
-    produto.ativo = False
-    db.commit()
+    possui_historico_pedidos = (
+        db.query(ItemPedido.id)
+        .filter(ItemPedido.produto_id == produto.id)
+        .first()
+        is not None
+    )
+    if possui_historico_pedidos:
+        raise HTTPException(
+            status_code=409,
+            detail=PRODUCT_DELETE_ORDER_HISTORY_MESSAGE,
+        )
+
+    try:
+        db.delete(produto)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=PRODUCT_DELETE_LINKED_RECORDS_MESSAGE,
+        ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
